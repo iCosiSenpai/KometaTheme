@@ -39,11 +39,6 @@ public class AnimeThemesDownloader : IDisposable
     /// </summary>
     private const string PartialSuffix = ".kt-part";
 
-    /// <summary>
-    /// Budget for a video re-encode, which is CPU-bound and far slower than a stream copy.
-    /// </summary>
-    private const int ReencodeTimeoutSeconds = 1800;
-
     private readonly HttpClient _client;
     private readonly IAnimeResolver _resolver;
     private readonly ILogger<AnimeThemesDownloader> _logger;
@@ -53,6 +48,7 @@ public class AnimeThemesDownloader : IDisposable
     private readonly DownloadTracker _downloadTracker;
     private readonly Sync.DownloadMetrics _metrics;
     private readonly ThemeLinkRepairService _linkRepair;
+    private readonly Sync.TranscodeGate _transcodeGate;
     private readonly object _downloadGateLock = new();
 
     /// <remarks>
@@ -80,7 +76,8 @@ public class AnimeThemesDownloader : IDisposable
         ThemeGrouper themeGrouper,
         DownloadTracker downloadTracker,
         Sync.DownloadMetrics metrics,
-        ThemeLinkRepairService linkRepair)
+        ThemeLinkRepairService linkRepair,
+        Sync.TranscodeGate transcodeGate)
     {
         _mediaEncoder = mediaEncoder;
         _resolver = resolver;
@@ -90,6 +87,7 @@ public class AnimeThemesDownloader : IDisposable
         _downloadTracker = downloadTracker;
         _metrics = metrics;
         _linkRepair = linkRepair;
+        _transcodeGate = transcodeGate;
         _client = clientFactory.CreateClient("AnimeThemesCDN");
     }
 
@@ -240,8 +238,26 @@ public class AnimeThemesDownloader : IDisposable
                 return;
             }
 
-            // Pick the first file and copy to theme.mp3
-            var bestFile = mp3Files[0];
+            // Deterministic choice. This used to take mp3Files[0] straight from Directory.GetFiles,
+            // i.e. filesystem enumeration order, so which song became the item's root theme could
+            // change from one run to the next for no visible reason. Openings first, then by
+            // sequence, then by name.
+            var bestFile = mp3Files
+                .OrderBy(path => Path.GetFileName(path).StartsWith("OP", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+                .First();
+
+            // Skip the copy when the destination already matches, so an unchanged item does not
+            // rewrite the file (and re-trigger a library change) on every sync.
+            var source = new FileInfo(bestFile);
+            var destination = new FileInfo(rootPath);
+            if (destination.Exists &&
+                destination.Length == source.Length &&
+                destination.LastWriteTimeUtc >= source.LastWriteTimeUtc)
+            {
+                return;
+            }
+
             File.Copy(bestFile, rootPath, overwrite: true);
             _logger.LogInformation("[{Id}] Copied {Src} → theme.mp3 for root-level theme song", item.Id, Path.GetFileName(bestFile));
         }
@@ -276,7 +292,7 @@ public class AnimeThemesDownloader : IDisposable
         result += await ProcessMediaType(MediaType.Video, anime, item, force, BuildSettings(), seasonNumber, configuration, cancellationToken).ConfigureAwait(false);
         result += await ProcessMediaType(MediaType.Audio, anime, item, force, BuildSettings(), seasonNumber, configuration, cancellationToken).ConfigureAwait(false);
 
-        if (item is Series series)
+        if (item is Series series && HasPerSeasonThemes(anime, configuration))
         {
             var childSeasons = series.Children.OfType<Season>().ToList();
             if (childSeasons.Count > 0)
@@ -292,6 +308,39 @@ public class AnimeThemesDownloader : IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Whether this anime's themes actually differ between seasons.
+    /// </summary>
+    /// <remarks>
+    /// A Series and each of its child Seasons have separate folders, and both used to be processed
+    /// unconditionally — so a single-season show got the same opening written twice and Jellyfin
+    /// registered theme media at two levels for one song. Descending into child seasons is only
+    /// worthwhile when the source really does describe distinct per-season themes.
+    /// </remarks>
+    private bool HasPerSeasonThemes(Anime anime, PluginConfiguration configuration)
+    {
+        // Audio settings are enough to decide: the grouping depends on the episode ranges, not on
+        // which media type is being fetched.
+        var themes = GetBestThemes(anime, configuration.AudioSettings).DistinctBy(it => it.Theme.Id).ToList();
+        if (themes.Count == 0)
+        {
+            return false;
+        }
+
+        var groups = _themeGrouper.GroupThemesBySeason(themes);
+        var seasonal = groups.Count(group => !group.IsUnclassified);
+        if (seasonal > 1 && ThemeGrouper.FormsSeasonPartition(groups))
+        {
+            return true;
+        }
+
+        _logger.LogDebug(
+            "Anime {AnimeId} has no distinct per-season themes ({Count} seasonal group(s)); skipping child seasons",
+            anime.Id,
+            seasonal);
+        return false;
     }
 
     private async ValueTask<ThemeSyncResult> ProcessMediaType(
@@ -537,7 +586,6 @@ public class AnimeThemesDownloader : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         var directory = mediaType == MediaType.Audio ? ThemeMusicDirectory : ThemeVideoDirectory;
-        var searchPattern = mediaType == MediaType.Audio ? "*.mp3" : "*.webm";
         var path = Path.Combine(item.ContainingFolderPath, directory);
         if (!Directory.Exists(path))
         {
@@ -556,7 +604,7 @@ public class AnimeThemesDownloader : IDisposable
         var allowedSet = allowedNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var removed = new List<string>();
 
-        foreach (var filepath in Directory.GetFiles(path, searchPattern))
+        foreach (var filepath in ThemeFileKinds.EnumerateFiles(path, mediaType == MediaType.Audio))
         {
             var name = Path.GetFileName(filepath);
             if (allowedSet.Contains(name))
@@ -637,20 +685,7 @@ public class AnimeThemesDownloader : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
-            try
-            {
-                await TranscodeToTargetAsync(type, sourceFile, path, volume, item, copyVideoStream: true, cancellationToken).ConfigureAwait(false);
-            }
-            catch (ConversionException) when (type == MediaType.Video)
-            {
-                // A stream copy only works when the source video codec is one the webm container
-                // accepts. An imported source can be H.264/mp4, which ffmpeg refuses to copy into
-                // webm, so fall back to a real encode rather than failing the import.
-                _logger.LogInformation("[{Id}] Stream copy rejected for the imported video; re-encoding instead", item.Id);
-                await TranscodeToTargetAsync(type, sourceFile, path, volume, item, copyVideoStream: false, cancellationToken).ConfigureAwait(false);
-            }
-
+            await TranscodeToTargetAsync(type, sourceFile, path, volume, item, cancellationToken).ConfigureAwait(false);
             RemoveLegacyMutedVideoForTarget(type, path, volume, item);
 
             if (record != null)
@@ -710,7 +745,7 @@ public class AnimeThemesDownloader : IDisposable
                 await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
             }
 
-            await TranscodeToTargetAsync(type, tempFile, path, volume, item, copyVideoStream: true, cancellationToken).ConfigureAwait(false);
+            await TranscodeToTargetAsync(type, tempFile, path, volume, item, cancellationToken).ConfigureAwait(false);
 
             _logger.LogInformation("[{Id}] Successfully downloaded theme!", item.Id);
             RemoveLegacyMutedVideoForTarget(type, path, volume, item);
@@ -775,11 +810,14 @@ public class AnimeThemesDownloader : IDisposable
         string targetPath,
         double volume,
         BaseItem item,
-        bool copyVideoStream,
         CancellationToken cancellationToken)
     {
         var partialPath = targetPath + PartialSuffix;
         TryDeleteFile(partialPath);
+
+        // Hold a process-wide slot for the duration of the ffmpeg run, so concurrent syncs and
+        // imports cannot between them start an unbounded number of encoder processes.
+        using var slot = await _transcodeGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -802,28 +840,11 @@ public class AnimeThemesDownloader : IDisposable
             var arguments = process.StartInfo.ArgumentList;
             if (type == MediaType.Video)
             {
-                if (copyVideoStream)
-                {
-                    arguments.Add("-c:v");
-                    arguments.Add("copy");
-                }
-                else
-                {
-                    // VP9 so the result is a valid webm. "good" with a row-based thread split keeps
-                    // a short theme clip within a sane wall time on a NAS-class CPU.
-                    arguments.Add("-c:v");
-                    arguments.Add("libvpx-vp9");
-                    arguments.Add("-crf");
-                    arguments.Add("33");
-                    arguments.Add("-b:v");
-                    arguments.Add("0");
-                    arguments.Add("-deadline");
-                    arguments.Add("good");
-                    arguments.Add("-cpu-used");
-                    arguments.Add("4");
-                    arguments.Add("-row-mt");
-                    arguments.Add("1");
-                }
+                // Always a stream copy. The target extension is chosen from the source container by
+                // the caller, so the video codec is by construction one this container accepts and
+                // there is never a reason to re-encode. Only the audio is filtered, which is cheap.
+                arguments.Add("-c:v");
+                arguments.Add("copy");
             }
 
             if (volume < 0.01 && type == MediaType.Video)
@@ -836,20 +857,17 @@ public class AnimeThemesDownloader : IDisposable
                 arguments.Add(string.Create(CultureInfo.InvariantCulture, $"volume={volume:0.00}"));
             }
 
-            // ffmpeg picks the muxer from the extension, so keep the real one and only
-            // append the partial marker after it.
+            // The partial marker is appended after the real extension, so ffmpeg can no longer
+            // infer the muxer from the file name — state it explicitly, derived from the target.
             arguments.Add("-f");
-            arguments.Add(type == MediaType.Audio ? "mp3" : "webm");
+            arguments.Add(MuxerFor(type, targetPath));
             arguments.Add(partialPath);
 
             process.Start();
 
-            // A stream copy is I/O-bound and finishes in seconds, so the configured timeout is the
-            // right budget. A re-encode is CPU-bound and can take many minutes for a theme-length
-            // clip on NAS-class hardware, which would otherwise be killed as a spurious timeout.
-            var timeoutSeconds = copyVideoStream || type == MediaType.Audio
-                ? Math.Clamp(Plugin.Instance?.Configuration?.DownloadTimeoutSeconds ?? 60, 15, 300)
-                : ReencodeTimeoutSeconds;
+            // Every path is now a stream copy or an audio-only encode, both I/O-bound and quick,
+            // so the configured budget is the right one everywhere.
+            var timeoutSeconds = Math.Clamp(Plugin.Instance?.Configuration?.DownloadTimeoutSeconds ?? 60, 15, 300);
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
@@ -906,12 +924,99 @@ public class AnimeThemesDownloader : IDisposable
                 throw new ConversionException(0, "ffmpeg reported success but produced no output.");
             }
 
+            // A stream copy from a source that has no video track succeeds and produces a
+            // perfectly valid file containing only audio — which, written into backdrops/, is a
+            // theme "video" that shows nothing. Verified in testing, so it is checked rather than
+            // assumed.
+            if (type == MediaType.Video && !await HasVideoStreamAsync(partialPath, cancellationToken).ConfigureAwait(false))
+            {
+                throw new ConversionException(0, "The produced theme video contains no video track.");
+            }
+
             File.Move(partialPath, targetPath, overwrite: true);
         }
         catch
         {
             TryDeleteFile(partialPath);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Picks the ffmpeg muxer name for a target path.
+    /// </summary>
+    /// <remarks>
+    /// The output file carries a <c>.kt-part</c> suffix while it is being written, which hides the
+    /// real extension from ffmpeg's format autodetection, so the muxer has to be named explicitly.
+    /// </remarks>
+    /// <param name="type">Audio or video theme.</param>
+    /// <param name="targetPath">Final path the file will be moved to.</param>
+    /// <returns>The ffmpeg muxer name.</returns>
+    internal static string MuxerFor(MediaType type, string targetPath)
+    {
+        if (type == MediaType.Audio)
+        {
+            return "mp3";
+        }
+
+        var extension = Path.GetExtension(targetPath);
+        return extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase) ? "mp4" : "webm";
+    }
+
+    /// <summary>
+    /// Asks ffprobe whether a file contains at least one video stream.
+    /// </summary>
+    private async Task<bool> HasVideoStreamAsync(string path, CancellationToken cancellationToken)
+    {
+        var probePath = _mediaEncoder.ProbePath;
+        if (string.IsNullOrWhiteSpace(probePath))
+        {
+            // No probe available: do not fail the import over a check we cannot run.
+            return true;
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    FileName = probePath,
+                    ArgumentList =
+                    {
+                        "-v", "error",
+                        "-select_streams", "v:0",
+                        "-show_entries", "stream=codec_type",
+                        "-of", "csv=p=0",
+                        path
+                    }
+                }
+            };
+
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var stderr = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            await process.WaitForExitAsync(linkedCts.Token).ConfigureAwait(false);
+            await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
+
+            return (await stdout.ConfigureAwait(false)).Contains("video", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning("ffprobe timed out while checking {Path} for a video stream", path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not probe {Path} for a video stream", path);
+            return true;
         }
     }
 
@@ -991,7 +1096,7 @@ public class AnimeThemesDownloader : IDisposable
         if (!videoSatisfied && videoSettings.FetchType != FetchType.None)
         {
             var vidDir = Path.Combine(item.ContainingFolderPath, ThemeVideoDirectory);
-            videoSatisfied = Directory.Exists(vidDir) && Directory.GetFiles(vidDir, "*.webm").Length > 0;
+            videoSatisfied = ThemeFileKinds.EnumerateFiles(vidDir, audio: false).Length > 0;
         }
 
         return audioSatisfied && videoSatisfied;
@@ -1050,7 +1155,7 @@ public class AnimeThemesDownloader : IDisposable
         var hasAnyThemeFile = Directory.Exists(Path.Combine(item.ContainingFolderPath, ThemeMusicDirectory)) &&
                               Directory.GetFiles(Path.Combine(item.ContainingFolderPath, ThemeMusicDirectory), "*.mp3").Length > 0;
         var hasAnyVideoFile = Directory.Exists(Path.Combine(item.ContainingFolderPath, ThemeVideoDirectory)) &&
-                              Directory.GetFiles(Path.Combine(item.ContainingFolderPath, ThemeVideoDirectory), "*.webm").Length > 0;
+                              ThemeFileKinds.EnumerateFiles(Path.Combine(item.ContainingFolderPath, ThemeVideoDirectory), audio: false).Length > 0;
 
         if (hasAnyThemeFile && hasAnyVideoFile)
         {

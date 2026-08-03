@@ -88,12 +88,20 @@ public class KometaThemesSkippedController : ControllerBase
         }
 
         var idString = itemId.ToString();
-        var existing = configuration.SkippedItems
-            .FirstOrDefault(s => Guid.TryParse(s.ItemId, out var g) && g == itemId);
+        var added = false;
 
-        if (existing == null)
+        // The existence check and the insert run together under the shared configuration lock, so
+        // two concurrent blacklist actions cannot both decide the entry is missing.
+        Plugin.MutateConfiguration(config =>
         {
-            configuration.SkippedItems.Add(new SkippedItemEntry
+            var existing = config.SkippedItems
+                .FirstOrDefault(s => Guid.TryParse(s.ItemId, out var g) && g == itemId);
+            if (existing != null)
+            {
+                return;
+            }
+
+            config.SkippedItems.Add(new SkippedItemEntry
             {
                 ItemId = idString,
                 Name = item.Name ?? string.Empty,
@@ -102,7 +110,12 @@ public class KometaThemesSkippedController : ControllerBase
                 Reason = request?.Reason ?? string.Empty,
                 SkippedUtc = DateTime.UtcNow
             });
-            Plugin.Instance!.SaveConfiguration();
+            config.TrimSkippedItems();
+            added = true;
+        });
+
+        if (added)
+        {
             _logger.LogInformation("Blacklisted item {Id} ({Name})", idString, item.Name);
         }
 
@@ -128,16 +141,21 @@ public class KometaThemesSkippedController : ControllerBase
             return NotFound(new { error = "Configuration not available" });
         }
 
-        var entry = configuration.SkippedItems
-            .FirstOrDefault(s => string.Equals(s.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
+        SkippedItemEntry? entry = null;
+        Plugin.MutateConfiguration(config =>
+        {
+            entry = config.SkippedItems
+                .FirstOrDefault(s => string.Equals(s.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
+            if (entry != null)
+            {
+                config.SkippedItems.Remove(entry);
+            }
+        });
 
         if (entry == null)
         {
             return NotFound(new { error = "Skipped item not found" });
         }
-
-        configuration.SkippedItems.Remove(entry);
-        Plugin.Instance!.SaveConfiguration();
 
         _logger.LogInformation("Removed skipped item {Id} ({Name})", entry.ItemId, entry.Name);
 
@@ -158,9 +176,12 @@ public class KometaThemesSkippedController : ControllerBase
             return NotFound(new { error = "Configuration not available" });
         }
 
-        var count = configuration.SkippedItems.Count;
-        configuration.SkippedItems.Clear();
-        Plugin.Instance!.SaveConfiguration();
+        var count = 0;
+        Plugin.MutateConfiguration(config =>
+        {
+            count = config.SkippedItems.Count;
+            config.SkippedItems.Clear();
+        });
 
         _logger.LogInformation("Cleared {Count} skipped items", count);
 

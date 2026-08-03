@@ -138,6 +138,7 @@
         currentBinding: null,
         downloading: false,
         life: null,
+        scoped: null,
         currentStep: 0,
         youtube: null,
         ytImporting: false,
@@ -152,7 +153,7 @@
         detailRequestId: 0
     };
 
-    function q(id) { return state.page.querySelector('#' + id); }
+    function q(id) { return (state.scoped || util.scoped(state.page))(id); }
 
     /* ---- stepper ---- */
 
@@ -215,24 +216,15 @@
 
             q('ktSearchInput').value = info.name || '';
             q('ktSearchYear').value = info.productionYear || '';
+            // The clear (x) button is driven by the input event, which a programmatic assignment
+            // does not fire.
+            if (state.syncSearchClear) { state.syncSearchClear(); }
             loadBinding(contextId, itemId);
             runSearch();
 
             ApiClient.getItem(ApiClient.getCurrentUserId(), itemId).then(function (item) {
                 if (contextId !== state.contextRequestId || itemId !== state.itemId) { return; }
-                if (item.ImageTags && item.ImageTags.Primary) {
-                    var poster = q('ktFinderPoster');
-                    util.clear(poster);
-                    var img = util.el('img');
-                    img.alt = item.Name;
-                    var imageUrl = util.safeUrl(ApiClient.getScaledImageUrl(item.Id, { type: 'Primary', maxWidth: 200, tag: item.ImageTags.Primary }));
-                    if (imageUrl) { img.src = imageUrl; poster.appendChild(img); }
-                }
-                if (item.BackdropImageTags && item.BackdropImageTags.length) {
-                    var backdrop = q('ktFinderBackdrop');
-                    var backdropUrl = ApiClient.getScaledImageUrl(item.Id, { type: 'Backdrop', maxWidth: 1280, tag: item.BackdropImageTags[0] });
-                    backdrop.style.display = util.setBackgroundImage(backdrop, backdropUrl) ? '' : 'none';
-                }
+                util.applyItemImages(item, q('ktFinderPoster'), q('ktFinderBackdrop'));
             }).catch(function () { /* poster is optional */ });
         }).catch(function (error) {
             if (contextId !== state.contextRequestId || itemId !== state.itemId) { return; }
@@ -439,9 +431,10 @@
             el.classList.toggle('active', isActive);
             el.setAttribute('aria-selected', isActive ? 'true' : 'false');
             if (isActive) {
+                // aria-activedescendant only. Focusing the option here used to pull focus off the
+                // listbox that owns the arrow-key handler.
                 list.setAttribute('aria-activedescendant', el.id || '');
                 el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
             }
         });
         if (activeIdx < 0) {
@@ -449,133 +442,33 @@
         }
     }
 
+    /* Both result lists share one keyboard implementation from kometa-a11y. */
     function setupResultsKeyboard() {
-        var list = q('ktResults');
-        if (!list || list.dataset.ktKeys === '1') return;
-        list.dataset.ktKeys = '1';
-
-        list.setAttribute('role', 'listbox');
-        list.setAttribute('aria-label', KT.t('resultsTitle') || 'Results');
-        list.setAttribute('aria-multiselectable', 'false');
-        list.setAttribute('tabindex', '0');
-
-        list.addEventListener('keydown', function (ev) {
-            var items = list.querySelectorAll('.kt-result');
-            if (!items.length) return;
-            var idx = state.resultsActiveIndex;
-            if (ev.key === 'ArrowDown') {
-                ev.preventDefault();
-                highlightResult(idx < 0 ? 0 : idx + 1, false);
-            } else if (ev.key === 'ArrowUp') {
-                ev.preventDefault();
-                highlightResult(idx <= 0 ? items.length - 1 : idx - 1, false);
-            } else if (ev.key === 'Home') {
-                ev.preventDefault();
-                highlightResult(0, false);
-            } else if (ev.key === 'End') {
-                ev.preventDefault();
-                highlightResult(items.length - 1, false);
-            } else if (ev.key === 'Enter' || ev.key === ' ') {
-                ev.preventDefault();
-                if (idx >= 0 && items[idx]) {
-                    var id = items[idx].dataset.animeId;
-                    var all = (state.results || []).concat(state.broadResults || []);
-                    var res = all.find(function (r) { return String(r.id) === id; });
-                    if (res) selectAnime(res);
-                }
-            } else if (ev.key === 'Escape') {
-                ev.preventDefault();
-                highlightResult(-1, false);
-            }
+        KT.a11y.setupListbox(q('ktResults'), {
+            itemSelector: '.kt-result',
+            label: KT.t('resultsTitle'),
+            getIndex: function () { return state.resultsActiveIndex; },
+            onActivate: function (index) { highlightResult(index, false); },
+            onChoose: function (option) { chooseResultById(option.dataset.animeId); }
         });
-
-        // focus list → auto-activate first for immediate arrow UX
-        list.addEventListener('focus', function () {
-            if (state.resultsActiveIndex < 0) {
-                var items = list.querySelectorAll('.kt-result');
-                if (items.length) highlightResult(0, false);
-            }
-        });
-
-        // click also sets active for consistency (mouse + kbd mix)
-        list.addEventListener('click', function (ev) {
-            var btn = ev.target.closest('.kt-result');
-            if (btn) {
-                var items = list.querySelectorAll('.kt-result');
-                for (var i = 0; i < items.length; i++) {
-                    if (items[i] === btn) {
-                        state.resultsActiveIndex = i;
-                        highlightResult(i, false);
-                        break;
-                    }
-                }
-            }
-        }, true);
     }
 
     function setupBroadKeyboard() {
-        var list = q('ktBroadResults');
-        if (!list || list.dataset.ktKeys === '1') return;
-        list.dataset.ktKeys = '1';
-
-        list.setAttribute('role', 'listbox');
-        list.setAttribute('aria-label', KT.t('broadResults') || 'Broad results');
-        list.setAttribute('aria-multiselectable', 'false');
-        list.setAttribute('tabindex', '0');
-
-        list.addEventListener('keydown', function (ev) {
-            var items = list.querySelectorAll('.kt-result');
-            if (!items.length) return;
-            var idx = state.broadActiveIndex;
-            if (ev.key === 'ArrowDown') {
-                ev.preventDefault();
-                highlightResult(idx < 0 ? 0 : idx + 1, true);
-            } else if (ev.key === 'ArrowUp') {
-                ev.preventDefault();
-                highlightResult(idx <= 0 ? items.length - 1 : idx - 1, true);
-            } else if (ev.key === 'Home') {
-                ev.preventDefault();
-                highlightResult(0, true);
-            } else if (ev.key === 'End') {
-                ev.preventDefault();
-                highlightResult(items.length - 1, true);
-            } else if (ev.key === 'Enter' || ev.key === ' ') {
-                ev.preventDefault();
-                if (idx >= 0 && items[idx]) {
-                    var id = items[idx].dataset.animeId;
-                    var all = (state.results || []).concat(state.broadResults || []);
-                    var res = all.find(function (r) { return String(r.id) === id; });
-                    if (res) selectAnime(res);
-                }
-            } else if (ev.key === 'Escape') {
-                ev.preventDefault();
-                highlightResult(-1, true);
-            }
+        KT.a11y.setupListbox(q('ktBroadResults'), {
+            itemSelector: '.kt-result',
+            label: KT.t('broadResults'),
+            getIndex: function () { return state.broadActiveIndex; },
+            onActivate: function (index) { highlightResult(index, true); },
+            onChoose: function (option) { chooseResultById(option.dataset.animeId); }
         });
-
-        list.addEventListener('focus', function () {
-            if (state.broadActiveIndex < 0) {
-                var items = list.querySelectorAll('.kt-result');
-                if (items.length) highlightResult(0, true);
-            }
-        });
-
-        list.addEventListener('click', function (ev) {
-            var btn = ev.target.closest('.kt-result');
-            if (btn) {
-                var items = list.querySelectorAll('.kt-result');
-                for (var i = 0; i < items.length; i++) {
-                    if (items[i] === btn) {
-                        state.broadActiveIndex = i;
-                        highlightResult(i, true);
-                        break;
-                    }
-                }
-            }
-        }, true);
     }
 
-    /* ---- anime detail + themes ---- */
+    function chooseResultById(animeId) {
+        if (!animeId) { return; }
+        var all = (state.results || []).concat(state.broadResults || []);
+        var match = all.filter(function (result) { return String(result.id) === String(animeId); })[0];
+        if (match) { selectAnime(match); }
+    }
 
     function clearDetail() {
         /* clears the currently-shown anime detail but NOT state.selected —
@@ -1084,10 +977,7 @@
     }
 
     function logLine(message, level) {
-        var box = q('ktDownloadLog');
-        box.style.display = '';
-        box.appendChild(util.el('div', level || 'info', message));
-        box.scrollTop = box.scrollHeight;
+        KT.ui.logLine(q('ktDownloadLog'), message, level);
     }
 
     function download() {
@@ -1358,6 +1248,7 @@
 
     function show(page) {
         state.page = page;
+        state.scoped = util.scoped(page);
         var itemId = util.getItemId();
         var itemChanged = itemId !== state.itemId;
         state.itemId = itemId;

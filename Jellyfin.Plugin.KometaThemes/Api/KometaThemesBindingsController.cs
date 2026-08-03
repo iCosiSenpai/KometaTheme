@@ -105,7 +105,7 @@ public class KometaThemesBindingsController : ControllerBase
             return StatusCode(StatusCodes.Status500InternalServerError, new { error = "Plugin not available" });
         }
 
-        UpsertBinding(plugin, item, request.AnimeId, request.AnimeName, request.Slug, request.Source ?? "Manual");
+        UpsertBinding(item, request.AnimeId, request.AnimeName, request.Slug, request.Source ?? "Manual");
 
         _logger.LogInformation(
             "Manual binding saved for item {ItemId} ({Name}) to anime {AnimeId}",
@@ -134,17 +134,24 @@ public class KometaThemesBindingsController : ControllerBase
 
         var item = _libraryManager.GetItemById(itemId);
         var itemIdString = itemId.ToString();
-        var configuration = plugin.Configuration;
-        var existing = configuration.ManualBindings
-            .FirstOrDefault(b => string.Equals(b.ItemId, itemIdString, StringComparison.OrdinalIgnoreCase));
+
+        // Find and remove together, under the shared configuration lock, so a concurrent upsert
+        // cannot slip between the two and be silently discarded.
+        ManualBindingEntry? existing = null;
+        Plugin.MutateConfiguration(configuration =>
+        {
+            existing = configuration.ManualBindings
+                .FirstOrDefault(b => string.Equals(b.ItemId, itemIdString, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                configuration.ManualBindings.Remove(existing);
+            }
+        });
 
         if (existing == null)
         {
             return NotFound(new { error = "Binding not found" });
         }
-
-        configuration.ManualBindings.Remove(existing);
-        plugin.SaveConfiguration();
 
         var deletedFiles = 0;
         if (deleteFiles && item != null && !string.IsNullOrWhiteSpace(item.ContainingFolderPath))
@@ -182,17 +189,21 @@ public class KometaThemesBindingsController : ControllerBase
 
         var item = _libraryManager.GetItemById(itemId);
         var itemIdString = itemId.ToString();
-        var configuration = plugin.Configuration;
-        var existing = configuration.ManualBindings
-            .FirstOrDefault(b => string.Equals(b.ItemId, itemIdString, StringComparison.OrdinalIgnoreCase));
+        ManualBindingEntry? existing = null;
+        Plugin.MutateConfiguration(configuration =>
+        {
+            existing = configuration.ManualBindings
+                .FirstOrDefault(b => string.Equals(b.ItemId, itemIdString, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                configuration.ManualBindings.Remove(existing);
+            }
+        });
 
         if (existing == null)
         {
             return NotFound(new { error = "Binding not found" });
         }
-
-        configuration.ManualBindings.Remove(existing);
-        plugin.SaveConfiguration();
 
         _logger.LogInformation(
             "Manual binding unlocked for item {ItemId}; automatic resolution will apply on next sync",
@@ -206,34 +217,35 @@ public class KometaThemesBindingsController : ControllerBase
     }
 
     private static void UpsertBinding(
-        Plugin plugin,
         BaseItem item,
         int animeId,
         string animeName,
         string slug,
         string source)
     {
-        var configuration = plugin.Configuration;
         var itemId = item.Id.ToString();
-        var existing = configuration.ManualBindings
-            .FirstOrDefault(b => string.Equals(b.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
-
-        if (existing != null)
+        Plugin.MutateConfiguration(configuration =>
         {
-            configuration.ManualBindings.Remove(existing);
-        }
+            var existing = configuration.ManualBindings
+                .FirstOrDefault(b => string.Equals(b.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
 
-        configuration.ManualBindings.Add(new ManualBindingEntry
-        {
-            ItemId = itemId,
-            AnimeId = animeId,
-            AnimeName = animeName,
-            Slug = slug,
-            BoundAt = DateTime.UtcNow,
-            Source = source
+            if (existing != null)
+            {
+                configuration.ManualBindings.Remove(existing);
+            }
+
+            configuration.ManualBindings.Add(new ManualBindingEntry
+            {
+                ItemId = itemId,
+                AnimeId = animeId,
+                AnimeName = animeName,
+                Slug = slug,
+                BoundAt = DateTime.UtcNow,
+                Source = source
+            });
+
+            configuration.TrimManualBindings();
         });
-
-        plugin.SaveConfiguration();
     }
 
     /// <summary>
@@ -269,7 +281,7 @@ public class KometaThemesBindingsController : ControllerBase
             }
 
             var directory = string.IsNullOrWhiteSpace(record.Directory)
-                ? (fileName.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? ThemeVideoDirectory : ThemeMusicDirectory)
+                ? Models.ThemeFileKinds.DirectoryForFileName(fileName)
                 : record.Directory;
 
             if (!string.Equals(directory, ThemeMusicDirectory, StringComparison.Ordinal) &&

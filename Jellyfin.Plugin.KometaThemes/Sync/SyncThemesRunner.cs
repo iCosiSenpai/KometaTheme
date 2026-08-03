@@ -512,28 +512,27 @@ public sealed class SyncThemesRunner
         };
     }
 
-    private static void PersistLastSync(int processedItems, int downloadedCount, int failedCount)
+    private void PersistLastSync(int processedItems, int downloadedCount, int failedCount)
     {
-        var plugin = Plugin.Instance;
-        if (plugin == null)
-        {
-            return;
-        }
-
         try
         {
-            plugin.Configuration.LastFullSyncUtc = DateTime.UtcNow;
-            plugin.Configuration.LastSyncSummary = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
+            var summary = string.Format(
+                CultureInfo.InvariantCulture,
                 "{0} processed, {1} downloaded, {2} failed",
                 processedItems,
                 downloadedCount,
                 failedCount);
-            plugin.SaveConfiguration();
+
+            Plugin.MutateConfiguration(config =>
+            {
+                config.LastFullSyncUtc = DateTime.UtcNow;
+                config.LastSyncSummary = summary;
+            });
         }
         catch (Exception ex)
         {
-            System.Console.WriteLine("Failed to persist last sync metadata: " + ex.Message);
+            // This used to write to System.Console, which does not reach Jellyfin's log at all.
+            _logger.LogWarning(ex, "Failed to persist last sync metadata");
         }
     }
 }

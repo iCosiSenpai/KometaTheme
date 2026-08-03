@@ -48,13 +48,20 @@ public sealed class YouTubeImportService
     private const int MaxErrorLength = 400;
 
     /// <summary>
-    /// Prefers a VP9/webm video stream so the theme file can be produced by a stream copy rather
-    /// than a re-encode, falling back through progressively looser choices.
+    /// Output template asking yt-dlp for a one-line JSON object with only the fields used here.
+    /// </summary>
+    private const string MetadataTemplate = "%(.{id,title,duration,ext})j";
+
+    /// <summary>
+    /// Video format preference. Ordered so that an already-muxed single file wins, then a webm
+    /// pairing, then anything at or below 1080p. Whatever container comes back is carried through to
+    /// the theme file, so no branch of this list forces a re-encode.
     /// </summary>
     private const string VideoFormatSelector =
-        "bestvideo[ext=webm][height<=1080]+bestaudio[ext=webm]/" +
-        "bestvideo[vcodec^=vp9][height<=1080]+bestaudio/" +
         "best[ext=webm][height<=1080]/" +
+        "best[ext=mp4][height<=1080]/" +
+        "bestvideo[ext=webm][height<=1080]+bestaudio[ext=webm]/" +
+        "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/" +
         "bestvideo[height<=1080]+bestaudio/best";
 
     /// <summary>
@@ -155,22 +162,33 @@ public sealed class YouTubeImportService
                 "--no-continue",
                 "--no-part",
                 "--restrict-filenames",
-                "--print-json",
+
+                // A compact JSON object of just the fields needed. The old --print-json emitted the
+                // full info dict — around 600 KB for a single video, almost all of it the format
+                // list — and is a deprecated alias. This variant is one line and stays correctly
+                // escaped for titles containing quotes or non-ASCII text.
+                "--no-simulate",
+                "-O", MetadataTemplate,
+
                 "--socket-timeout", "30",
                 "--retries", "3",
                 "--max-filesize", MaxFileSizeArgument(),
-                "--match-filter", string.Create(CultureInfo.InvariantCulture, $"duration < {MaxDurationSeconds}"),
+
+                // Plural: --match-filter is a deprecated alias.
+                "--match-filters", string.Create(CultureInfo.InvariantCulture, $"duration < {MaxDurationSeconds}"),
                 "-f", audioOnly ? AudioFormatSelector : VideoFormatSelector,
                 "-o", outputTemplate
             };
 
             if (!audioOnly)
             {
-                // Ask for a webm container so the video stream can usually be copied straight into
-                // the theme file. YouTube serves VP9/Opus for essentially everything modern, but the
-                // caller still has a re-encode fallback for the cases where it cannot.
+                // Prefer a single already-muxed stream so no merge step is needed at all, and let
+                // the container be whatever the chosen format uses. Forcing webm here used to mean
+                // an H.264 source had to be re-encoded to VP9 before it could be written, which
+                // measured at roughly 4x realtime on a 4-core machine — minutes of pegged CPU for
+                // one theme. The container is now carried through and the stream simply copied.
                 arguments.Add("--merge-output-format");
-                arguments.Add("webm");
+                arguments.Add("webm/mp4");
             }
 
             // "--" then the canonical URL this process builds itself: the user's string never
@@ -373,7 +391,8 @@ public sealed class YouTubeImportService
 
     private static (string Title, int DurationSeconds) ParseMetadata(string stdout)
     {
-        // --print-json emits one JSON object per line.
+        // -O emits one JSON object per selected video. Scan for it rather than assuming a line
+        // position, since yt-dlp may also print unrelated notices.
         foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var trimmed = line.Trim();

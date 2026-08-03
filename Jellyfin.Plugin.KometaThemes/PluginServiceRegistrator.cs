@@ -38,6 +38,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Sync status tracking
         serviceCollection.AddSingleton<SyncStatusTracker>();
         serviceCollection.AddSingleton<DownloadMetrics>();
+
+        // Process-wide ffmpeg concurrency cap, shared by sync, Theme Finder and YouTube import.
+        serviceCollection.AddSingleton<TranscodeGate>();
         serviceCollection.AddSingleton<FailedItemsStore>();
         serviceCollection.AddSingleton<SyncThemesRunner>();
 

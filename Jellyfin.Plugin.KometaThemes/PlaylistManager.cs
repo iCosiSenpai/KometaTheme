@@ -55,11 +55,10 @@ public class PlaylistManager
             var allFiles = new List<string>();
 
             var configuration = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-            var pattern = string.IsNullOrWhiteSpace(configuration.LibraryPattern) ? "Anime" : configuration.LibraryPattern;
-            var includeRegex = new Regex(pattern, RegexOptions.IgnoreCase);
+            var isIncluded = Configuration.LibraryPatternMatcher.Create(configuration.LibraryPattern);
 
             var libraries = _libraryManager.GetVirtualFolders()
-                .Where(lib => includeRegex.IsMatch(lib.Name))
+                .Where(lib => isIncluded(lib.Name))
                 .ToList();
 
             foreach (var library in libraries)
@@ -75,18 +74,32 @@ public class PlaylistManager
 
             _logger.LogInformation("Playlist refresh complete: {Count} total theme files found", allFiles.Count);
 
+            var playlistPath = Path.Combine(
+                _appPaths.DataPath,
+                "playlists",
+                $"{SanitizeFileName(playlistName)}.m3u");
+
             if (allFiles.Count > 0)
             {
-                var playlistPath = Path.Combine(
-                    _appPaths.DataPath,
-                    "playlists",
-                    $"{SanitizeFileName(playlistName)}.m3u");
-
                 Directory.CreateDirectory(Path.GetDirectoryName(playlistPath)!);
 
-                await File.WriteAllLinesAsync(playlistPath, allFiles, cancellationToken).ConfigureAwait(false);
+                // Temp file plus rename, so a reader never sees a half-written playlist.
+                var tempPath = playlistPath + ".tmp";
+                await File.WriteAllLinesAsync(tempPath, allFiles, cancellationToken).ConfigureAwait(false);
+                File.Move(tempPath, playlistPath, overwrite: true);
                 _logger.LogInformation("Playlist saved to: {Path}", playlistPath);
             }
+            else if (File.Exists(playlistPath))
+            {
+                // No themes left anywhere. Leaving the previous file in place used to present a
+                // playlist of paths that no longer exist.
+                File.Delete(playlistPath);
+                _logger.LogInformation("No theme files found; removed stale playlist {Path}", playlistPath);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

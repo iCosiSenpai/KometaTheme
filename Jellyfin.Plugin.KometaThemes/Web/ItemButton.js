@@ -7,7 +7,7 @@
     var PAGE_NAME = 'KometaThemesSearch';
     var MENU_PAGE = 'KometaThemesItem'; // the main-menu drawer entry (Plugin.GetPages)
     var DRAWER_STYLE_ID = 'kometathemes-drawer-style';
-    var ASSET_VERSION = '1.1.0.0';
+    var ASSET_VERSION = '1.2.0.0';
     var ICON_URL = 'configurationpage?name=KometaThemesLogoSvg&v=' + ASSET_VERSION;
     var FALLBACK_INTERVAL_MS = 10000;
     var MAX_CACHE_ENTRIES = 500;

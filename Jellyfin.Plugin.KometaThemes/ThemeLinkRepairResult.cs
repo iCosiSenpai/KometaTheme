@@ -31,6 +31,11 @@ public class ThemeLinkRepairResult
     public bool OwnerUpdated { get; set; }
 
     /// <summary>
+    /// Gets or sets the number of dangling theme extra references removed from the owner.
+    /// </summary>
+    public int StaleLinksRemoved { get; set; }
+
+    /// <summary>
     /// Gets or sets the number of theme songs Jellyfin reports for the item after repair.
     /// </summary>
     public int RegisteredSongs { get; set; }

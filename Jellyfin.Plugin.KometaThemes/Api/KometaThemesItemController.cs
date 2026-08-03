@@ -412,7 +412,7 @@ public class KometaThemesItemController : ControllerBase
         // Prefer the recorded directory; records written before it existed are inferred from the
         // extension, which is what those records always were in practice.
         var directories = string.IsNullOrWhiteSpace(record.Directory)
-            ? new[] { fileName.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? ThemeVideoDirectory : ThemeMusicDirectory }
+            ? new[] { Models.ThemeFileKinds.DirectoryForFileName(fileName) }
             : new[] { record.Directory };
 
         var deleted = 0;

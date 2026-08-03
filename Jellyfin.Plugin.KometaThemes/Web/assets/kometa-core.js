@@ -7,7 +7,7 @@
 
     // Guard against double-loading the exact same version of core.
     // Bump this string on every meaningful change to kometa-core.js (keeps in sync with Directory.Build.props + HTML V=).
-    var CURRENT_VERSION = '1.1.0.0';
+    var CURRENT_VERSION = '1.2.0.0';
     if (window.KT && window.KT.VERSION === CURRENT_VERSION) { return; }
 
     var KT = {
@@ -91,6 +91,35 @@
         },
         navigate: function (url) {
             try { Dashboard.navigate(url); } catch (e) { window.location.hash = '#/' + url; }
+        },
+        /* Returns a page-scoped element lookup. Every page module defined its own identical
+           `function q(id) { return state.page.querySelector('#' + id); }`. */
+        scoped: function (root) {
+            return function (id) { return root ? root.querySelector('#' + id) : null; };
+        },
+        /* Applies a Jellyfin item's poster and backdrop to the standard hero nodes.
+           search.js and item.js had byte-identical copies of this. */
+        applyItemImages: function (item, posterNode, backdropNode) {
+            if (item && posterNode && item.ImageTags && item.ImageTags.Primary) {
+                var posterUrl = util.safeUrl(ApiClient.getScaledImageUrl(item.Id, {
+                    type: 'Primary', maxWidth: 240, tag: item.ImageTags.Primary
+                }));
+                if (posterUrl) {
+                    util.clear(posterNode);
+                    var img = util.el('img');
+                    img.alt = '';
+                    img.setAttribute('aria-hidden', 'true');
+                    img.src = posterUrl;
+                    posterNode.appendChild(img);
+                }
+            }
+
+            if (item && backdropNode && item.BackdropImageTags && item.BackdropImageTags.length) {
+                var backdropUrl = ApiClient.getScaledImageUrl(item.Id, {
+                    type: 'Backdrop', maxWidth: 1280, tag: item.BackdropImageTags[0]
+                });
+                backdropNode.style.display = util.setBackgroundImage(backdropNode, backdropUrl) ? '' : 'none';
+            }
         }
     };
 
@@ -436,6 +465,44 @@
                 if (timer) { clearTimeout(timer); timer = null; }
             }
         };
+    };
+
+    /* Appends a line to a .kt-log box, revealing it on first use.
+       search.js called this logLine() and config.js called it log(); same body. */
+    ui.logLine = function (box, message, level) {
+        if (!box) { return; }
+        box.style.display = '';
+        box.appendChild(util.el('div', level || 'info', message));
+
+        // Bound the box: these are aria-live regions, and an unbounded transcript is both a memory
+        // leak and an ever-growing thing for a screen reader to sit inside.
+        while (box.childElementCount > 400) {
+            box.removeChild(box.firstChild);
+        }
+
+        box.scrollTop = box.scrollHeight;
+    };
+
+    /* Builds a two-state toggle button carrying aria-pressed, which the theme filters and the
+       media toggles each reimplemented. onToggle receives the new state. */
+    ui.toggleButton = function (label, pressed, onToggle, className) {
+        var button = util.el('button', 'kt-btn kt-btn-sm ' + (className || ''), label);
+        button.type = 'button';
+
+        function apply(value) {
+            button.classList.toggle('on', !!value);
+            button.setAttribute('aria-pressed', value ? 'true' : 'false');
+        }
+
+        apply(pressed);
+        button.addEventListener('click', function () {
+            var next = button.getAttribute('aria-pressed') !== 'true';
+            apply(next);
+            if (onToggle) { onToggle(next); }
+        });
+
+        button.ktSetPressed = apply;
+        return button;
     };
 
     /* Per-page teardown registry.

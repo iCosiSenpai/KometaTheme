@@ -80,5 +80,77 @@
         setTimeout(function () { region.textContent = message || ''; }, 0);
     }
 
-    KT.a11y = { setupTabs: setupTabs, setBusy: setBusy, announce: announce };
+    /* Keyboard behaviour for a single-select listbox of option elements.
+       The Theme Finder had two ~95% identical copies of this, differing only in the container id
+       and which state field held the active index. */
+    function setupListbox(container, options) {
+        if (!container || container.dataset.ktKeys === '1') { return null; }
+        container.dataset.ktKeys = '1';
+
+        options = options || {};
+        var itemSelector = options.itemSelector || '[role="option"]';
+
+        container.setAttribute('role', 'listbox');
+        container.setAttribute('aria-multiselectable', 'false');
+        if (options.label) { container.setAttribute('aria-label', options.label); }
+
+        // One ARIA model, not two: focus stays on the container and the active option is named by
+        // aria-activedescendant. The previous code did both — it set aria-activedescendant *and*
+        // called focus() on the option, which immediately moved focus off the container that the
+        // arrow-key handler was bound to.
+        container.setAttribute('tabindex', '0');
+
+        function items() {
+            return Array.prototype.slice.call(container.querySelectorAll(itemSelector));
+        }
+
+        function activate(index) {
+            if (typeof options.onActivate === 'function') { options.onActivate(index); }
+        }
+
+        container.addEventListener('keydown', function (event) {
+            var list = items();
+            if (!list.length) { return; }
+
+            var current = typeof options.getIndex === 'function' ? options.getIndex() : -1;
+            var next = null;
+
+            if (event.key === 'ArrowDown') { next = current < 0 ? 0 : (current + 1) % list.length; }
+            else if (event.key === 'ArrowUp') { next = current <= 0 ? list.length - 1 : current - 1; }
+            else if (event.key === 'Home') { next = 0; }
+            else if (event.key === 'End') { next = list.length - 1; }
+            else if (event.key === 'Escape') { next = -1; }
+            else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                if (current >= 0 && list[current] && typeof options.onChoose === 'function') {
+                    options.onChoose(list[current], current);
+                }
+
+                return;
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            activate(next);
+        });
+
+        container.addEventListener('focus', function () {
+            if (typeof options.getIndex === 'function' && options.getIndex() < 0 && items().length) {
+                activate(0);
+            }
+        });
+
+        // Clicking an option keeps the active index in step, so mixing mouse and keyboard works.
+        container.addEventListener('click', function (event) {
+            var option = event.target.closest(itemSelector);
+            if (!option) { return; }
+            var index = items().indexOf(option);
+            if (index >= 0) { activate(index); }
+        }, true);
+
+        return { items: items };
+    }
+
+    KT.a11y = { setupTabs: setupTabs, setupListbox: setupListbox, setBusy: setBusy, announce: announce };
 })(window);

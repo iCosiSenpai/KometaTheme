@@ -1,7 +1,7 @@
 ---
 name: "KometaThemes"
 guid: "48c98707-45d1-43ac-94b8-f74d875ad29c"
-version: "1.1.0.0"
+version: "1.2.0.0"
 targetAbi: "10.11.8.0"
 framework: "net9.0"
 overview: "Plugin for Jellyfin that fetches anime themes (OPs and EDs) from animethemes.moe with multi-provider support"
@@ -15,6 +15,22 @@ owner: "KometaThemes"
 artifacts:
   - "Jellyfin.Plugin.KometaThemes.dll"
 changelog: |-
+  v1.2.0.0
+  - YouTube import is now verified end to end and much faster. A source YouTube serves as H.264 used to be re-encoded to VP9 before it could be written, measured at roughly four times realtime — minutes of pegged CPU for one theme. The container the extractor returns is now carried through and the stream simply copied: the same 3.5 minute video went from about 13 minutes to 7 seconds
+  - Fix: a theme video that turned out to contain no video track is now rejected instead of being written as a silent, picture-less backdrop
+  - Fix: theme videos are recognised in both webm and mp4 everywhere, including the link repair that registers them with Jellyfin — an imported mp4 would previously never have been linked and so never played
+  - Fix: two dashboard actions saving at the same time can no longer lose one of the two entries, or fail part-way through writing the configuration file
+  - Fix: a later season is no longer confidently given an earlier season's themes. When the episode ranges the source reports do not cleanly divide the run, all themes are offered instead of naming a season that cannot be determined
+  - Fix: a single-season show no longer gets the same opening written into both the series folder and its season folder
+  - Fix: which song becomes the item's root theme is now deterministic instead of depending on filesystem order, and it is not rewritten when nothing changed
+  - Fix: stale theme references are removed from an item instead of accumulating on every volume change and force sync
+  - Fix: the skip list, the manual bindings, the resolution cache and the unresolved list are all bounded now, and expired cache entries are swept on a schedule rather than only when something happens to look them up again
+  - Fix: cache and unresolved-list reads no longer block a thread each and no longer serialize against one another
+  - Fix: a malformed library-name pattern can no longer hang a sync, and an invalid one falls back to a plain text match instead of failing
+  - Fix: the themes playlist is written atomically and is removed when no themes remain, instead of leaving a list of paths that no longer exist
+  - Fix: ffmpeg runs are now capped across the whole plugin. The previous limit applied only within a single request, so several simultaneous downloads could start an unbounded number of conversions
+  - Interface: the two result lists, the log boxes, the poster rendering and the element lookups now share one implementation, and the results list uses a single consistent keyboard model
+
   v1.1.0.0
   - New: add openings and endings from a YouTube link, for themes animethemes.moe does not have. Pasting a link asks whether it is an OP or an ED and whether you want audio, video or both. Off by default, and it needs yt-dlp installed in the Jellyfin environment
   - Fix: a failed or interrupted conversion no longer leaves a broken theme file that every later sync skipped as "already downloaded". Theme files are now published atomically, and an existing empty one is replaced

@@ -17,6 +17,11 @@ namespace Jellyfin.Plugin.KometaThemes;
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     /// <summary>
+    /// Serializes read-modify-write access to the shared configuration object.
+    /// </summary>
+    private static readonly object ConfigurationWriteLock = new();
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Plugin"/> class.
     /// </summary>
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
@@ -41,6 +46,47 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// Gets the current plugin instance.
     /// </summary>
     public static Plugin? Instance { get; private set; }
+
+    /// <summary>
+    /// Applies a change to the plugin configuration and persists it, under a lock shared by every
+    /// writer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="BasePlugin{T}.Configuration"/> is a single mutable object shared by every request,
+    /// and the skipped-items and manual-bindings properties are plain <c>Collection&lt;T&gt;</c>.
+    /// Callers used to do an unsynchronized find-remove-add and then call
+    /// <c>SaveConfiguration</c> themselves. Two concurrent dashboard actions
+    /// could therefore interleave and lose one of the two entries, and
+    /// <c>XmlSerializer</c> walking a collection while another thread mutated it throws
+    /// <c>Collection was modified</c> part-way through writing the file. The base class locks the
+    /// file write but nothing protected the object graph.
+    /// </para>
+    /// <para>
+    /// Mutations must not block: this lock is held across the synchronous config write, so callers
+    /// should do their bookkeeping inside the delegate and any I/O outside it.
+    /// </para>
+    /// </remarks>
+    /// <param name="mutate">The change to apply. Runs while the lock is held.</param>
+    /// <returns>Whether the change was applied. False only when the plugin is not initialised.</returns>
+    public static bool MutateConfiguration(Action<PluginConfiguration> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+
+        var plugin = Instance;
+        if (plugin == null)
+        {
+            return false;
+        }
+
+        lock (ConfigurationWriteLock)
+        {
+            mutate(plugin.Configuration);
+            plugin.SaveConfiguration();
+        }
+
+        return true;
+    }
 
     /// <inheritdoc />
     public IEnumerable<PluginPageInfo> GetPages()

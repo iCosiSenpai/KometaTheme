@@ -101,13 +101,45 @@ public class ThemeLinkRepairService
             linkedIds.Add(extra.Id);
         }
 
-        // Union with existing ExtraIds so unrelated extras (trailers etc.) are kept.
-        var extraIds = (owner.ExtraIds ?? []).Union(linkedIds).ToArray();
-        if (!extraIds.SequenceEqual(owner.ExtraIds ?? []))
+        // Keep unrelated extras (trailers and so on) and this run's theme files, but drop stale
+        // theme extras whose file no longer exists. The previous union-only approach meant every
+        // volume change or force sync — which renames theme files — left the old GUIDs behind
+        // forever, so ExtraIds only ever grew.
+        var currentThemeIds = linkedIds.ToHashSet();
+        var existingIds = owner.ExtraIds ?? [];
+        var keptIds = new List<Guid>();
+        var droppedIds = 0;
+
+        foreach (var existingId in existingIds)
+        {
+            if (currentThemeIds.Contains(existingId))
+            {
+                continue;
+            }
+
+            var existingExtra = _libraryManager.GetItemById(existingId);
+
+            // Unknown to the library, or a theme extra whose file is gone: stop referencing it.
+            var isStaleTheme = existingExtra == null
+                || existingExtra.ExtraType == ExtraType.ThemeSong
+                || existingExtra.ExtraType == ExtraType.ThemeVideo;
+
+            if (isStaleTheme)
+            {
+                droppedIds++;
+                continue;
+            }
+
+            keptIds.Add(existingId);
+        }
+
+        var extraIds = keptIds.Concat(linkedIds).Distinct().ToArray();
+        if (!extraIds.SequenceEqual(existingIds))
         {
             owner.ExtraIds = extraIds;
             await owner.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
             result.OwnerUpdated = true;
+            result.StaleLinksRemoved = droppedIds;
         }
 
         result.RegisteredSongs = owner.GetThemeSongs().Count;
@@ -133,7 +165,9 @@ public class ThemeLinkRepairService
         var directory = Path.Combine(containingFolderPath, audio ? ThemeMusicDirectory : ThemeVideoDirectory);
         if (Directory.Exists(directory))
         {
-            files.AddRange(Directory.GetFiles(directory, audio ? "*.mp3" : "*.webm"));
+            // Every recognised container, not just webm: an imported mp4 theme would otherwise
+            // never be linked to its owner and would silently never play.
+            files.AddRange(Models.ThemeFileKinds.EnumerateFiles(directory, audio));
         }
 
         if (audio)

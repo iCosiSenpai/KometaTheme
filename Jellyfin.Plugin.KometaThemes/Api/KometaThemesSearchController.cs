@@ -30,7 +30,7 @@ namespace Jellyfin.Plugin.KometaThemes.Search;
 [ApiController]
 [Authorize(Policy = Policies.RequiresElevation)]
 [Route("Plugins/KometaThemes")]
-public sealed class KometaThemesSearchController : ControllerBase, IDisposable
+public sealed class KometaThemesSearchController : ControllerBase
 {
     private const string ThemeMusicDirectory = "theme-music";
     private const string ThemeVideoDirectory = "backdrops";
@@ -77,7 +77,6 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
     private readonly YouTubeImportService _youTube;
     private readonly ThemeLinkRepairService _linkRepair;
     private readonly ILogger<KometaThemesSearchController> _logger;
-    private SemaphoreSlim _downloadSemaphore = new(ManualDownloadParallelism, ManualDownloadParallelism);
 
     public KometaThemesSearchController(
         AnimeThemesApi api,
@@ -357,6 +356,8 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
             return BadRequest(new { error = "Selected item has no writable media folder." });
         }
 
+        using var requestGate = new SemaphoreSlim(ManualDownloadParallelism, ManualDownloadParallelism);
+
         var validationError = ValidateDownloadRequest(request, item, out var downloadItems);
         if (validationError != null)
         {
@@ -367,10 +368,12 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
             return BadRequest(validationError);
         }
 
+        // Downloads are serialized here per request; the shared TranscodeGate inside the downloader
+        // is what bounds ffmpeg across all requests.
         var results = new ConcurrentBag<object>();
         var tasks = downloadItems.Select(async theme =>
         {
-            await _downloadSemaphore.WaitAsync(ct).ConfigureAwait(false);
+            await requestGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 var outcome = await _downloader.DownloadSingle(theme.MediaType, theme.Url, item, theme.RelativePath, theme.Volume, ct).ConfigureAwait(false);
@@ -393,7 +396,7 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
             }
             finally
             {
-                _downloadSemaphore.Release();
+                requestGate.Release();
             }
         });
 
@@ -584,7 +587,10 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
         CancellationToken ct)
     {
         var themeName = BuildImportedThemeName(request.ThemeType, sequence, displayTitle);
-        if (!TryBuildRelativePath(item, mediaType, themeName, out var relativePath, volume))
+
+        // Carry the source container into the target name so the write is a stream copy.
+        var sourceExtension = Path.GetExtension(sourceFile);
+        if (!TryBuildRelativePath(item, mediaType, themeName, out var relativePath, volume, sourceExtension))
         {
             return new
             {
@@ -662,33 +668,29 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
 
     private static void SaveManualBinding(BaseItem item, int animeId, string animeName, string animeSlug)
     {
-        var plugin = Plugin.Instance;
-        if (plugin == null)
-        {
-            return;
-        }
-
-        var config = plugin.Configuration;
         var itemId = item.Id.ToString();
-        var existing = config.ManualBindings.FirstOrDefault(b =>
-            string.Equals(b.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
-
-        if (existing != null)
+        Plugin.MutateConfiguration(config =>
         {
-            config.ManualBindings.Remove(existing);
-        }
+            var existing = config.ManualBindings.FirstOrDefault(b =>
+                string.Equals(b.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
 
-        config.ManualBindings.Add(new Models.ManualBindingEntry
-        {
-            ItemId = itemId,
-            AnimeId = animeId,
-            AnimeName = animeName ?? item.Name,
-            Slug = animeSlug,
-            BoundAt = DateTime.UtcNow,
-            Source = "ThemeFinder"
+            if (existing != null)
+            {
+                config.ManualBindings.Remove(existing);
+            }
+
+            config.ManualBindings.Add(new Models.ManualBindingEntry
+            {
+                ItemId = itemId,
+                AnimeId = animeId,
+                AnimeName = animeName ?? item.Name,
+                Slug = animeSlug,
+                BoundAt = DateTime.UtcNow,
+                Source = "ThemeFinder"
+            });
+
+            config.TrimManualBindings();
         });
-
-        plugin.SaveConfiguration();
     }
 
     [HttpGet("Items/{itemId}/info")]
@@ -724,7 +726,7 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
                 songsOnDisk++;
             }
 
-            videosOnDisk = System.IO.Directory.Exists(videoDir) ? System.IO.Directory.GetFiles(videoDir, "*.webm").Length : 0;
+            videosOnDisk = ThemeFileKinds.EnumerateFiles(videoDir, audio: false).Length;
         }
 
         return Ok(new
@@ -1302,7 +1304,28 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
                host.EndsWith(".animethemes.moe", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryBuildRelativePath(BaseItem item, MediaType mediaType, string themeName, out string relativePath, double volume)
+    /// <summary>
+    /// Builds a theme path relative to the item folder, constrained to the theme directories.
+    /// </summary>
+    /// <param name="item">Owning library item.</param>
+    /// <param name="mediaType">Audio or video theme.</param>
+    /// <param name="themeName">Display name to derive the file name from.</param>
+    /// <param name="relativePath">The resulting path, relative to the item folder.</param>
+    /// <param name="volume">Volume baked into the file name.</param>
+    /// <param name="videoExtension">
+    /// Video container to use, including the dot. Imported themes carry the container of whatever
+    /// stream the extractor returned, so the file can be written with a stream copy instead of a
+    /// re-encode. Sync downloads always pass null and get <c>.webm</c>, which is what
+    /// animethemes.moe serves.
+    /// </param>
+    /// <returns>Whether a valid, contained path could be built.</returns>
+    private static bool TryBuildRelativePath(
+        BaseItem item,
+        MediaType mediaType,
+        string themeName,
+        out string relativePath,
+        double volume,
+        string? videoExtension = null)
     {
         relativePath = string.Empty;
         var safeName = SanitizeThemeName(themeName);
@@ -1313,7 +1336,7 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
 
         var isVideo = mediaType == MediaType.Video;
         var directory = isVideo ? ThemeVideoDirectory : ThemeMusicDirectory;
-        var extension = isVideo ? ".webm" : ".mp3";
+        var extension = isVideo ? NormalizeVideoExtension(videoExtension) : ".mp3";
         var suffix = $"__{(int)Math.Round(Math.Clamp(volume, 0.0, 1.0) * 100)}";
         var filename = safeName + suffix + extension;
 
@@ -1328,6 +1351,25 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
 
         relativePath = Path.Combine(directory, filename);
         return true;
+    }
+
+    /// <summary>
+    /// Constrains the theme video container to one Jellyfin resolves and ffmpeg can mux into with a
+    /// stream copy. Anything unrecognised falls back to webm.
+    /// </summary>
+    private static string NormalizeVideoExtension(string? extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return ".webm";
+        }
+
+        var normalized = extension.StartsWith('.') ? extension : "." + extension;
+        return normalized.ToLowerInvariant() switch
+        {
+            ".mp4" or ".m4v" => ".mp4",
+            _ => ".webm"
+        };
     }
 
     private static string SanitizeThemeName(string? themeName)
@@ -1373,12 +1415,6 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
         }
 
         return sanitized;
-    }
-
-    public void Dispose()
-    {
-        _downloadSemaphore.Dispose();
-        GC.SuppressFinalize(this);
     }
 
     private sealed record SearchKey(

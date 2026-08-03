@@ -273,13 +273,14 @@
         bindings: [],
         poller: null,
         life: null,
+        scoped: null,
         syncStarting: false,
         saving: false,
         logTab: 'server',
         logFetchedAt: 0
     };
 
-    function q(id) { return state.page.querySelector('#' + id); }
+    function q(id) { return (state.scoped || util.scoped(state.page))(id); }
 
     /* ---- field rendering + binding ---- */
 
@@ -1070,11 +1071,10 @@
     /* ---- sync actions ---- */
 
     function log(message, level) {
+        // The panel wrapper and the session log are separate nodes here: reveal the wrapper, append
+        // into the session box.
         q('ktLog').style.display = '';
-        var box = q('ktLogSession');
-        var line = util.el('div', level || 'info', message);
-        box.appendChild(line);
-        box.scrollTop = box.scrollHeight;
+        KT.ui.logLine(q('ktLogSession'), message, level);
     }
 
     function triggerSync(force) {

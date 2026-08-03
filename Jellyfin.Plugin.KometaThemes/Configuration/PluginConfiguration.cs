@@ -15,6 +15,17 @@ namespace Jellyfin.Plugin.KometaThemes.Configuration;
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>
+    /// Largest number of entries kept in the skip list and the manual-binding list.
+    /// </summary>
+    /// <remarks>
+    /// Both lists live inside the single plugin configuration XML file, are rewritten in full on
+    /// every save, and had no cap and no pruning of entries whose item no longer exists. The
+    /// bindings listing endpoint also does a library lookup per entry on every GET. A cap keeps the
+    /// config file, the save cost and that listing bounded; the oldest entries are dropped first.
+    /// </remarks>
+    public const int MaxPersistedListEntries = 2000;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="PluginConfiguration"/> class.
     /// </summary>
     public PluginConfiguration()
@@ -294,6 +305,76 @@ public class PluginConfiguration : BasePluginConfiguration
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Drops the oldest skip-list entries once the list exceeds <see cref="MaxPersistedListEntries"/>.
+    /// </summary>
+    public void TrimSkippedItems()
+    {
+        if (SkippedItems.Count <= MaxPersistedListEntries)
+        {
+            return;
+        }
+
+        var keep = SkippedItems
+            .OrderByDescending(entry => entry.SkippedUtc)
+            .Take(MaxPersistedListEntries)
+            .ToList();
+
+        SkippedItems.Clear();
+        foreach (var entry in keep)
+        {
+            SkippedItems.Add(entry);
+        }
+    }
+
+    /// <summary>
+    /// Drops the oldest manual bindings once the list exceeds <see cref="MaxPersistedListEntries"/>.
+    /// </summary>
+    public void TrimManualBindings()
+    {
+        if (ManualBindings.Count <= MaxPersistedListEntries)
+        {
+            return;
+        }
+
+        var keep = ManualBindings
+            .OrderByDescending(entry => entry.BoundAt)
+            .Take(MaxPersistedListEntries)
+            .ToList();
+
+        ManualBindings.Clear();
+        foreach (var entry in keep)
+        {
+            ManualBindings.Add(entry);
+        }
+    }
+
+    /// <summary>
+    /// Removes skip-list and binding entries whose item is no longer present in the library.
+    /// </summary>
+    /// <param name="itemExists">Predicate telling whether an item ID still resolves.</param>
+    /// <returns>How many entries were dropped.</returns>
+    public int PruneMissingItems(Func<string, bool> itemExists)
+    {
+        ArgumentNullException.ThrowIfNull(itemExists);
+
+        var removed = 0;
+
+        foreach (var entry in SkippedItems.Where(entry => !itemExists(entry.ItemId)).ToList())
+        {
+            SkippedItems.Remove(entry);
+            removed++;
+        }
+
+        foreach (var entry in ManualBindings.Where(entry => !itemExists(entry.ItemId)).ToList())
+        {
+            ManualBindings.Remove(entry);
+            removed++;
+        }
+
+        return removed;
     }
 
     /// <summary>

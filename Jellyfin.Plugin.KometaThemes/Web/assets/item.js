@@ -65,9 +65,9 @@
         { key: 'AllOPEDAudioVideo', label: 'presetOPEDVideo' }
     ];
 
-    var state = { page: null, itemId: null, poller: null, life: null, requestId: 0, busy: false };
+    var state = { page: null, itemId: null, poller: null, life: null, scoped: null, requestId: 0, busy: false };
 
-    function q(id) { return state.page.querySelector('#' + id); }
+    function q(id) { return (state.scoped || util.scoped(state.page))(id); }
 
     function setState(message, type) {
         var node = q('ktItemState');
@@ -97,19 +97,7 @@
                 if (value) { chips.appendChild(util.el('span', 'kt-chip', String(value))); }
             });
 
-            var poster = q('ktItemPoster');
-            if (item.ImageTags && item.ImageTags.Primary) {
-                util.clear(poster);
-                var img = util.el('img');
-                img.alt = item.Name;
-                var imageUrl = util.safeUrl(ApiClient.getScaledImageUrl(item.Id, { type: 'Primary', maxWidth: 200, tag: item.ImageTags.Primary }));
-                if (imageUrl) { img.src = imageUrl; poster.appendChild(img); }
-            }
-            if (item.BackdropImageTags && item.BackdropImageTags.length) {
-                var backdrop = q('ktItemBackdrop');
-                var backdropUrl = ApiClient.getScaledImageUrl(item.Id, { type: 'Backdrop', maxWidth: 1280, tag: item.BackdropImageTags[0] });
-                backdrop.style.display = util.setBackgroundImage(backdrop, backdropUrl) ? '' : 'none';
-            }
+            util.applyItemImages(item, q('ktItemPoster'), q('ktItemBackdrop'));
         }).catch(function () {
             if (itemId === state.itemId) { q('ktItemTitle').textContent = itemId; }
         });
@@ -366,6 +354,7 @@
 
     function show(page) {
         state.page = page;
+        state.scoped = util.scoped(page);
         var nextItemId = util.getItemId();
         var itemChanged = nextItemId !== state.itemId;
         state.itemId = nextItemId;

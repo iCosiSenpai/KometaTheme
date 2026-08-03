@@ -26,13 +26,10 @@ internal static class LibrarySelection
         ILibraryManager libraryManager,
         PluginConfiguration configuration)
     {
-        var pattern = string.IsNullOrWhiteSpace(configuration.LibraryPattern)
-            ? "Anime"
-            : configuration.LibraryPattern;
-        var includeRegex = new Regex(pattern, RegexOptions.IgnoreCase);
+        var isIncluded = LibraryPatternMatcher.Create(configuration.LibraryPattern);
 
         var libraryIds = libraryManager.GetVirtualFolders()
-            .Where(lib => includeRegex.IsMatch(lib.Name))
+            .Where(lib => isIncluded(lib.Name))
             .Select(lib => Guid.TryParse(lib.ItemId, out var id) ? id : Guid.Empty)
             .Where(id => id != Guid.Empty)
             .ToArray();
@@ -88,10 +85,7 @@ internal static class LibrarySelection
             return false;
         }
 
-        var pattern = string.IsNullOrWhiteSpace(configuration.LibraryPattern)
-            ? "Anime"
-            : configuration.LibraryPattern;
-        var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+        var isIncluded = LibraryPatternMatcher.Create(configuration.LibraryPattern);
 
         var skipped = configuration.GetSkippedItemsDictionary();
         if (skipped.ContainsKey(item.Id.ToString()))
@@ -103,7 +97,7 @@ internal static class LibrarySelection
         var parents = item.GetParents();
         foreach (var parent in parents)
         {
-            if (parent is CollectionFolder folder && regex.IsMatch(folder.Name))
+            if (parent is CollectionFolder folder && isIncluded(folder.Name))
             {
                 return true;
             }
@@ -111,7 +105,7 @@ internal static class LibrarySelection
 
         // Fallback: check top parent
         var topParent = item.GetTopParent();
-        if (topParent is CollectionFolder topFolder && regex.IsMatch(topFolder.Name))
+        if (topParent is CollectionFolder topFolder && isIncluded(topFolder.Name))
         {
             return true;
         }
@@ -119,7 +113,7 @@ internal static class LibrarySelection
         // Robust fallback: use the same AncestorIds logic as GetEligibleItems
         // This ensures consistency even if parent chain doesn't expose CollectionFolder directly.
         var libraryIds = libraryManager.GetVirtualFolders()
-            .Where(lib => regex.IsMatch(lib.Name))
+            .Where(lib => isIncluded(lib.Name))
             .Select(lib => Guid.TryParse(lib.ItemId, out var id) ? id : Guid.Empty)
             .Where(id => id != Guid.Empty)
             .ToArray();

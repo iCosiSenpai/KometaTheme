@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -16,23 +17,36 @@ namespace Jellyfin.Plugin.KometaThemes.Sync;
 /// <summary>
 /// Persistent store of items that failed to resolve or download, so the
 /// dashboard can surface them with retry/blacklist actions.
-/// Thread-safe via SemaphoreSlim with debounced flush to disk.
 /// </summary>
+/// <remarks>
+/// Backed by a <see cref="ConcurrentDictionary{TKey, TValue}"/>. The previous version took a
+/// blocking <c>SemaphoreSlim.Wait()</c> on every operation including reads, and entries were mutated
+/// in place while <see cref="GetAll"/> handed the very same instances to a controller for
+/// serialization — so a response could contain a half-updated entry. Updates now replace the entry
+/// with a new object and readers get copies.
+/// </remarks>
 public sealed class FailedItemsStore : IDisposable
 {
+    /// <summary>
+    /// Ceiling on tracked failures. Permanently unresolvable items accumulate one entry each and
+    /// nothing ever aged them out, so the file and the dashboard list grew without bound.
+    /// </summary>
+    private const int MaxEntries = 5000;
+
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
-        WriteIndented = true,
+        WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private readonly string _storePath;
     private readonly ILogger<FailedItemsStore> _logger;
-    private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly Timer _flushTimer;
-    private readonly Dictionary<string, FailedItemEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, FailedItemEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _dirty;
+    private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FailedItemsStore"/> class.
@@ -55,21 +69,7 @@ public sealed class FailedItemsStore : IDisposable
     /// <summary>
     /// Gets the number of tracked failed items.
     /// </summary>
-    public int Count
-    {
-        get
-        {
-            _semaphore.Wait();
-            try
-            {
-                return _entries.Count;
-            }
-            finally
-            {
-                _semaphore.Release();
-            }
-        }
-    }
+    public int Count => _entries.Count;
 
     /// <summary>
     /// Records a failure for an item, bumping the attempt counter if it already exists.
@@ -85,38 +85,59 @@ public sealed class FailedItemsStore : IDisposable
             return;
         }
 
-        _semaphore.Wait();
-        try
-        {
-            if (_entries.TryGetValue(key, out var existing))
+        // AddOrUpdate with a fresh instance rather than mutating the stored one, so a concurrent
+        // GetAll can never observe an entry mid-update.
+        _entries.AddOrUpdate(
+            key,
+            _ => new FailedItemEntry
             {
-                existing.Name = item.Name ?? existing.Name;
-                existing.Reason = reason;
-                existing.Error = error;
-                existing.LastAttemptUtc = DateTime.UtcNow;
-                existing.Attempts++;
-            }
-            else
+                ItemId = item.Id.ToString(),
+                Name = item.Name ?? string.Empty,
+                Type = item.GetBaseItemKind().ToString(),
+                ProductionYear = item.ProductionYear,
+                Reason = reason,
+                Error = error,
+                LastAttemptUtc = DateTime.UtcNow,
+                Attempts = 1
+            },
+            (_, existing) => new FailedItemEntry
             {
-                _entries[key] = new FailedItemEntry
-                {
-                    ItemId = item.Id.ToString(),
-                    Name = item.Name ?? string.Empty,
-                    Type = item.GetBaseItemKind().ToString(),
-                    ProductionYear = item.ProductionYear,
-                    Reason = reason,
-                    Error = error,
-                    LastAttemptUtc = DateTime.UtcNow,
-                    Attempts = 1
-                };
-            }
+                ItemId = existing.ItemId,
+                Name = item.Name ?? existing.Name,
+                Type = existing.Type,
+                ProductionYear = existing.ProductionYear,
+                Reason = reason,
+                Error = error,
+                LastAttemptUtc = DateTime.UtcNow,
+                Attempts = existing.Attempts + 1
+            });
 
-            Volatile.Write(ref _dirty, true);
-        }
-        finally
+        Volatile.Write(ref _dirty, true);
+        EnforceCap();
+    }
+
+    /// <summary>
+    /// Drops the least recently attempted entries once the store exceeds <see cref="MaxEntries"/>.
+    /// </summary>
+    private void EnforceCap()
+    {
+        if (_entries.Count <= MaxEntries)
         {
-            _semaphore.Release();
+            return;
         }
+
+        var excess = _entries.Count - MaxEntries;
+        var oldest = _entries.ToArray()
+            .OrderBy(pair => pair.Value.LastAttemptUtc)
+            .Take(excess)
+            .Select(pair => pair.Key);
+
+        foreach (var staleKey in oldest)
+        {
+            _entries.TryRemove(staleKey, out _);
+        }
+
+        _logger.LogInformation("Failed-items store exceeded {Max} entries; dropped {Count} oldest", MaxEntries, excess);
     }
 
     /// <summary>
@@ -143,21 +164,13 @@ public sealed class FailedItemsStore : IDisposable
             return false;
         }
 
-        _semaphore.Wait();
-        try
+        if (_entries.TryRemove(key, out _))
         {
-            if (_entries.Remove(key))
-            {
-                Volatile.Write(ref _dirty, true);
-                return true;
-            }
+            Volatile.Write(ref _dirty, true);
+            return true;
+        }
 
-            return false;
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        return false;
     }
 
     /// <summary>
@@ -173,18 +186,13 @@ public sealed class FailedItemsStore : IDisposable
             return;
         }
 
-        _semaphore.Wait();
-        try
+        // Compare-and-remove: only drop the entry if it is still the Unresolved one we looked at,
+        // so a failure recorded in between is not lost.
+        if (_entries.TryGetValue(key, out var entry) &&
+            entry.Reason == FailedItemReason.Unresolved &&
+            _entries.TryRemove(new KeyValuePair<string, FailedItemEntry>(key, entry)))
         {
-            if (_entries.TryGetValue(key, out var entry) && entry.Reason == FailedItemReason.Unresolved)
-            {
-                _entries.Remove(key);
-                Volatile.Write(ref _dirty, true);
-            }
-        }
-        finally
-        {
-            _semaphore.Release();
+            Volatile.Write(ref _dirty, true);
         }
     }
 
@@ -194,17 +202,22 @@ public sealed class FailedItemsStore : IDisposable
     /// <returns>Snapshot list of failed item entries.</returns>
     public IReadOnlyList<FailedItemEntry> GetAll()
     {
-        _semaphore.Wait();
-        try
-        {
-            return _entries.Values
-                .OrderByDescending(e => e.LastAttemptUtc)
-                .ToArray();
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        // Copies, not the stored instances: the caller serializes these on a request thread while
+        // a sync may be recording new failures.
+        return _entries.Values
+            .OrderByDescending(e => e.LastAttemptUtc)
+            .Select(entry => new FailedItemEntry
+            {
+                ItemId = entry.ItemId,
+                Name = entry.Name,
+                Type = entry.Type,
+                ProductionYear = entry.ProductionYear,
+                Reason = entry.Reason,
+                Error = entry.Error,
+                LastAttemptUtc = entry.LastAttemptUtc,
+                Attempts = entry.Attempts
+            })
+            .ToArray();
     }
 
     /// <summary>
@@ -213,22 +226,14 @@ public sealed class FailedItemsStore : IDisposable
     /// <returns>The number of removed entries.</returns>
     public int Clear()
     {
-        _semaphore.Wait();
-        try
+        var count = _entries.Count;
+        if (count > 0)
         {
-            var count = _entries.Count;
-            if (count > 0)
-            {
-                _entries.Clear();
-                Volatile.Write(ref _dirty, true);
-            }
+            _entries.Clear();
+            Volatile.Write(ref _dirty, true);
+        }
 
-            return count;
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        return count;
     }
 
     /// <summary>
@@ -236,6 +241,12 @@ public sealed class FailedItemsStore : IDisposable
     /// </summary>
     public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         _flushTimer.Dispose();
         try
         {
@@ -246,7 +257,7 @@ public sealed class FailedItemsStore : IDisposable
             _logger.LogError(ex, "Failed items store flush failed during dispose");
         }
 
-        _semaphore.Dispose();
+        _fileLock.Dispose();
     }
 
     private static string NormalizeId(string id)
@@ -266,7 +277,6 @@ public sealed class FailedItemsStore : IDisposable
 
     private void LoadFromDisk()
     {
-        _semaphore.Wait();
         try
         {
             if (!File.Exists(_storePath))
@@ -314,10 +324,6 @@ public sealed class FailedItemsStore : IDisposable
         {
             _logger.LogError(ex, "Failed to load failed items store from disk");
         }
-        finally
-        {
-            _semaphore.Release();
-        }
     }
 
     private async void FlushTimerCallback(object? state)
@@ -334,14 +340,14 @@ public sealed class FailedItemsStore : IDisposable
 
     private async Task FlushToDiskAsync()
     {
-        // Volatile: writers set _dirty under the semaphore, but this pre-check runs outside it,
-        // so a plain read could observe a stale false and skip the flush entirely.
+        // Volatile: writers set _dirty outside this method, so a plain read could observe a stale
+        // false and skip the flush entirely.
         if (!Volatile.Read(ref _dirty))
         {
             return;
         }
 
-        await _semaphore.WaitAsync().ConfigureAwait(false);
+        await _fileLock.WaitAsync().ConfigureAwait(false);
         try
         {
             if (!Volatile.Read(ref _dirty))
@@ -366,7 +372,7 @@ public sealed class FailedItemsStore : IDisposable
         }
         finally
         {
-            _semaphore.Release();
+            _fileLock.Release();
         }
     }
 }

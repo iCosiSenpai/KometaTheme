@@ -121,7 +121,7 @@ public sealed class ItemRemovedHandler : IDisposable
                 }
 
                 var directory = string.IsNullOrWhiteSpace(record.Directory)
-                    ? (fileName.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? ThemeVideoDirectory : ThemeMusicDirectory)
+                    ? Models.ThemeFileKinds.DirectoryForFileName(fileName)
                     : record.Directory;
 
                 if (!string.Equals(directory, ThemeMusicDirectory, StringComparison.Ordinal) &&
