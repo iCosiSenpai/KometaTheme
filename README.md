@@ -179,7 +179,9 @@ The item page shows downloaded themes, disk and registration status, missing fil
 
 ### 🎛️ Configuration reference
 
-| Section | Purpose |
+The section names below are the tab labels you actually see in the plugin.
+
+| Tab | Purpose |
 |---|---|
 | **General** | Interface language, library filter, schedule, auto-sync, cleanup, notifications |
 | **Themes & Download** | Series/movie media modes, volume, OP/ED and credit filters, season behaviour, download parallelism, dry-run, YouTube import |
@@ -190,12 +192,12 @@ The item page shows downloaded themes, disk and registration status, missing fil
 
 **Fetch modes**
 
-| Mode | Behaviour |
-|---|---|
-| `None` | Do not download this media type |
-| `Single` | Download the best eligible theme |
-| `All` | Download all eligible themes |
-| `AllPerSeason` | Keep eligible themes grouped and named per detected season |
+| Stored value | Shown in the UI as | Behaviour |
+|---|---|---|
+| `None` | *None* | Do not download this media type |
+| `Single` | *Best theme only* | Download the best eligible theme |
+| `All` | *All themes* | Download all eligible themes |
+| `AllPerSeason` | *All, per season* | Keep eligible themes grouped and named per detected season |
 
 **Typical output**
 
@@ -234,29 +236,55 @@ The browser suite loads the real embedded shells against a local Jellyfin API fi
 
 <br />
 
+All paths are relative to `/Plugins/KometaThemes`. Everything requires an elevated Jellyfin token except the two anonymous web assets at the bottom.
+
 | Endpoint | Method | Purpose |
 |---|:---:|---|
-| `/Plugins/KometaThemes/Health` | GET | Version, health, metrics, current sync summary |
-| `/Plugins/KometaThemes/Sync/status` | GET | Live sync progress |
-| `/Plugins/KometaThemes/Sync/sync` | POST | Start an incremental sync |
-| `/Plugins/KometaThemes/Sync/force` | POST | Start a server-side forced sync |
-| `/Plugins/KometaThemes/Sync/run` | POST | Start a library preset |
-| `/Plugins/KometaThemes/Items/{id}/info` | GET | Item and theme-registration context |
-| `/Plugins/KometaThemes/Items/{id}/sync` | POST | Sync one eligible item |
-| `/Plugins/KometaThemes/Items/{id}/themes` | GET · DELETE | List themes, or delete them |
-| `/Plugins/KometaThemes/Items/{id}/repair` | POST | Repair Jellyfin theme links |
-| `/Plugins/KometaThemes/Items/{id}/download` | POST | Download selected AnimeThemes media |
-| `/Plugins/KometaThemes/Items/{id}/youtube` | POST | Import a theme from a YouTube link |
-| `/Plugins/KometaThemes/YouTube/status` | GET | Whether YouTube import is enabled and available |
-| `/Plugins/KometaThemes/Search` | GET | Search AnimeThemes candidates |
-| `/Plugins/KometaThemes/Anime/{id}/themes` | GET | Retrieve themes and season groups |
-| `/Plugins/KometaThemes/Bindings/{id}` | POST · DELETE | Save or remove a manual binding |
-| `/Plugins/KometaThemes/Cache/stats` | GET | Resolution-cache statistics |
-| `/Plugins/KometaThemes/Cache/clear` | POST | Clear the resolution cache |
-| `/Plugins/KometaThemes/Logs?lines=200` | GET | Read current plugin log entries |
-| `/Plugins/KometaThemes/Playlist/refresh` | POST | Rebuild the global playlist |
-| `/Plugins/KometaThemes/Playlist/export` | GET | Download the M3U playlist |
-| `/Plugins/KometaThemes/ItemButton.js` | GET | Item-button injector script — anonymous resource |
+| **Health and sync** | | |
+| `/Health` | GET | Version, health, metrics, current sync summary |
+| `/Sync/status` | GET | Live sync progress |
+| `/Sync/sync` | POST | Start an incremental sync |
+| `/Sync/force` | POST | Start a server-side forced sync |
+| `/Sync/run` | POST | Start a library preset |
+| **Per item** | | |
+| `/Items/{id}/info` | GET | Item and theme-registration context |
+| `/Items/{id}/eligible` | GET | Whether the item is in a matching library |
+| `/Items/{id}/binding` | GET | The item's manual binding, if any |
+| `/Items/{id}/themes` | GET · DELETE | List themes, or delete them |
+| `/Items/{id}/sync` | POST | Sync one eligible item |
+| `/Items/{id}/preview` | POST | Resolve without downloading anything |
+| `/Items/{id}/repair` | POST | Repair Jellyfin theme links |
+| `/Items/{id}/download` | POST | Download selected AnimeThemes media |
+| `/Items/{id}/youtube` | POST | Import a theme from a YouTube link |
+| **Search and YouTube** | | |
+| `/Search` | GET | Search AnimeThemes candidates |
+| `/Anime/{id}/themes` | GET | Retrieve themes and season groups |
+| `/YouTube/status` | GET | Whether YouTube import is enabled and available |
+| **Bindings** | | |
+| `/Bindings` | GET | List every manual binding |
+| `/Bindings/{id}` | POST · DELETE | Save or remove a binding |
+| `/Bindings/{id}/unlock` | POST | Drop the binding but keep the files |
+| **Unresolved** | | |
+| `/Failed/items` | GET | List unresolved items |
+| `/Failed/count` | GET | Unresolved count |
+| `/Failed/items/{id}` | DELETE | Dismiss one entry |
+| `/Failed/items/{id}/resolve-manually` | POST | Mark as handled by hand |
+| `/Failed/clear` | POST | Clear the list |
+| **Excluded** | | |
+| `/Skipped/items` | GET | List excluded items |
+| `/Skipped/count` | GET | Excluded count |
+| `/Skipped/{id}` | POST | Add to the blacklist |
+| `/Skipped/{id}/remove` | POST | Restore one item |
+| `/Skipped/clear` | POST | Clear the blacklist |
+| **Cache, logs, playlist** | | |
+| `/Cache/stats` | GET | Resolution-cache statistics |
+| `/Cache/clear` | POST | Clear the resolution cache |
+| `/Logs?lines=200` | GET | Read current plugin log entries |
+| `/Playlist/refresh` | POST | Rebuild the global playlist |
+| `/Playlist/export` | GET | Download the M3U playlist |
+| **Web assets** | | |
+| `/ItemButton.js` | GET | Item-button injector script — anonymous |
+| `/InjectButton` | POST | File Transformation hook — anonymous |
 
 </details>
 
@@ -527,23 +555,25 @@ La pagina dell'elemento mostra i temi scaricati, lo stato su disco e di registra
 
 ### 🎛️ Riferimento della configurazione
 
-| Sezione | Scopo |
+I nomi delle sezioni qui sotto sono quelli che vedi davvero nelle schede del plugin.
+
+| Scheda | Scopo |
 |---|---|
 | **Generale** | Lingua dell'interfaccia, filtro libreria, pianificazione, sync automatico, pulizia, notifiche |
-| **Temi e download** | Modalità per serie e film, volume, filtri OP/ED e credits, comportamento stagioni, parallelismo, dry-run, import da YouTube |
-| **Provider e riconoscimento** | Ordine dei provider, soglia di somiglianza, limite di richieste, TTL di cache, controlli della cache |
+| **Temi & Download** | Modalità per serie e film, volume, filtri OP/ED e credits, comportamento stagioni, parallelismo, dry-run, import da YouTube |
+| **Provider & Matching** | Ordine dei provider, soglia di somiglianza, limite di richieste, TTL di cache, controlli della cache |
 | **Esclusi** | Elementi in blacklist e ripristino, configurazione della playlist globale, export M3U |
-| **Associazioni** | Corrispondenze manuali permanenti, sblocco/ricalcolo, rimozione opzionale dei file scaricati |
+| **Binding** | Corrispondenze manuali permanenti, sblocco/ricalcolo, rimozione opzionale dei file scaricati |
 | **Non risolti** | Riprova, risoluzione manuale, blacklist, ignora, svuota |
 
 **Modalità di download**
 
-| Modalità | Comportamento |
-|---|---|
-| `None` | Non scaricare questo tipo di media |
-| `Single` | Scarica il miglior tema disponibile |
-| `All` | Scarica tutti i temi disponibili |
-| `AllPerSeason` | Mantiene i temi raggruppati e nominati per stagione rilevata |
+| Valore salvato | Nell'interfaccia | Comportamento |
+|---|---|---|
+| `None` | *Niente* | Non scaricare questo tipo di media |
+| `Single` | *Solo il migliore* | Scarica il miglior tema disponibile |
+| `All` | *Tutti i temi* | Scarica tutti i temi disponibili |
+| `AllPerSeason` | *Tutti, per stagione* | Mantiene i temi raggruppati e nominati per stagione rilevata |
 
 **Risultato tipico**
 
@@ -582,29 +612,55 @@ La suite di test carica le vere pagine incorporate contro un finto server Jellyf
 
 <br />
 
+Tutti i percorsi sono relativi a `/Plugins/KometaThemes`. Richiedono tutti un token Jellyfin con privilegi, tranne le due risorse web anonime in fondo.
+
 | Endpoint | Metodo | Scopo |
 |---|:---:|---|
-| `/Plugins/KometaThemes/Health` | GET | Versione, stato, metriche, riepilogo dell'ultimo sync |
-| `/Plugins/KometaThemes/Sync/status` | GET | Avanzamento del sync in corso |
-| `/Plugins/KometaThemes/Sync/sync` | POST | Avvia un sync incrementale |
-| `/Plugins/KometaThemes/Sync/force` | POST | Avvia un sync forzato lato server |
-| `/Plugins/KometaThemes/Sync/run` | POST | Avvia un preset di libreria |
-| `/Plugins/KometaThemes/Items/{id}/info` | GET | Contesto dell'elemento e registrazione dei temi |
-| `/Plugins/KometaThemes/Items/{id}/sync` | POST | Sincronizza un singolo elemento |
-| `/Plugins/KometaThemes/Items/{id}/themes` | GET · DELETE | Elenca o elimina i temi |
-| `/Plugins/KometaThemes/Items/{id}/repair` | POST | Ripara i collegamenti dei temi |
-| `/Plugins/KometaThemes/Items/{id}/download` | POST | Scarica i media selezionati da AnimeThemes |
-| `/Plugins/KometaThemes/Items/{id}/youtube` | POST | Importa un tema da un link YouTube |
-| `/Plugins/KometaThemes/YouTube/status` | GET | Se l'import da YouTube è attivo e disponibile |
-| `/Plugins/KometaThemes/Search` | GET | Cerca candidati su AnimeThemes |
-| `/Plugins/KometaThemes/Anime/{id}/themes` | GET | Recupera temi e gruppi di stagione |
-| `/Plugins/KometaThemes/Bindings/{id}` | POST · DELETE | Salva o rimuove un'associazione manuale |
-| `/Plugins/KometaThemes/Cache/stats` | GET | Statistiche della cache di risoluzione |
-| `/Plugins/KometaThemes/Cache/clear` | POST | Svuota la cache di risoluzione |
-| `/Plugins/KometaThemes/Logs?lines=200` | GET | Legge le voci di log del plugin |
-| `/Plugins/KometaThemes/Playlist/refresh` | POST | Rigenera la playlist globale |
-| `/Plugins/KometaThemes/Playlist/export` | GET | Scarica la playlist M3U |
-| `/Plugins/KometaThemes/ItemButton.js` | GET | Script del pulsante — risorsa anonima |
+| **Stato e sync** | | |
+| `/Health` | GET | Versione, stato, metriche, riepilogo dell'ultimo sync |
+| `/Sync/status` | GET | Avanzamento del sync in corso |
+| `/Sync/sync` | POST | Avvia un sync incrementale |
+| `/Sync/force` | POST | Avvia un sync forzato lato server |
+| `/Sync/run` | POST | Avvia un preset di libreria |
+| **Per elemento** | | |
+| `/Items/{id}/info` | GET | Contesto dell'elemento e registrazione dei temi |
+| `/Items/{id}/eligible` | GET | Se l'elemento è in una libreria corrispondente |
+| `/Items/{id}/binding` | GET | L'associazione manuale dell'elemento, se presente |
+| `/Items/{id}/themes` | GET · DELETE | Elenca o elimina i temi |
+| `/Items/{id}/sync` | POST | Sincronizza un singolo elemento |
+| `/Items/{id}/preview` | POST | Risolve senza scaricare nulla |
+| `/Items/{id}/repair` | POST | Ripara i collegamenti dei temi |
+| `/Items/{id}/download` | POST | Scarica i media selezionati da AnimeThemes |
+| `/Items/{id}/youtube` | POST | Importa un tema da un link YouTube |
+| **Ricerca e YouTube** | | |
+| `/Search` | GET | Cerca candidati su AnimeThemes |
+| `/Anime/{id}/themes` | GET | Recupera temi e gruppi di stagione |
+| `/YouTube/status` | GET | Se l'import da YouTube è attivo e disponibile |
+| **Binding** | | |
+| `/Bindings` | GET | Elenca tutte le associazioni manuali |
+| `/Bindings/{id}` | POST · DELETE | Salva o rimuove un'associazione |
+| `/Bindings/{id}/unlock` | POST | Rimuove l'associazione ma conserva i file |
+| **Non risolti** | | |
+| `/Failed/items` | GET | Elenca gli elementi non risolti |
+| `/Failed/count` | GET | Quantità di non risolti |
+| `/Failed/items/{id}` | DELETE | Ignora una voce |
+| `/Failed/items/{id}/resolve-manually` | POST | Segna come gestito a mano |
+| `/Failed/clear` | POST | Svuota l'elenco |
+| **Esclusi** | | |
+| `/Skipped/items` | GET | Elenca gli elementi esclusi |
+| `/Skipped/count` | GET | Quantità di esclusi |
+| `/Skipped/{id}` | POST | Aggiunge alla blacklist |
+| `/Skipped/{id}/remove` | POST | Ripristina un elemento |
+| `/Skipped/clear` | POST | Svuota la blacklist |
+| **Cache, log, playlist** | | |
+| `/Cache/stats` | GET | Statistiche della cache di risoluzione |
+| `/Cache/clear` | POST | Svuota la cache di risoluzione |
+| `/Logs?lines=200` | GET | Legge le voci di log del plugin |
+| `/Playlist/refresh` | POST | Rigenera la playlist globale |
+| `/Playlist/export` | GET | Scarica la playlist M3U |
+| **Risorse web** | | |
+| `/ItemButton.js` | GET | Script del pulsante — anonimo |
+| `/InjectButton` | POST | Hook di File Transformation — anonimo |
 
 </details>
 
