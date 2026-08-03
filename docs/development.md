@@ -63,17 +63,30 @@ Jellyfin page shells
 
 ## Design decisions worth knowing
 
-**YouTube extraction runs `yt-dlp` as an external process** instead of using a managed
-library. The plugin ships as a single DLL with no side-by-side dependencies, so a
-NuGet extractor would not reach users at all. YouTube's player also changes far more
-often than this plugin releases, and `yt-dlp` is maintained against exactly those
-changes.
+**YouTube extraction has two backends.** A managed extractor (YoutubeExplode) ships inside the
+plugin package, so the feature works on a stock server with nothing to install — which is how
+comparable Jellyfin plugins behave. When `yt-dlp` is present it is preferred instead, because it is
+maintained continuously against YouTube's changes while the bundled copy is pinned to a plugin
+release. Neither is required.
 
-**Imported media is never re-encoded for the video container.** The extractor is asked
-for a pre-muxed file, and ffmpeg stream-copies it. Re-encoding to VP9 was measured at
-roughly 0.27x realtime on four cores, which turns a normal-length theme into minutes
-of full-CPU work; stream copy finishes in seconds. Audio is still encoded to MP3,
-because Jellyfin theme songs need it.
+Because of that, the release archive is **not** a single DLL. It carries
+`Jellyfin.Plugin.KometaThemes.dll`, `YoutubeExplode.dll`, `AngleSharp.dll` and
+`JsonExtensions.dll`. It must not carry anything else: building with
+`CopyLocalLockFileAssemblies` also drops around thirty Jellyfin and `Microsoft.Extensions`
+assemblies into the output folder, and shipping those would place a second copy of the server's own
+types in the plugin directory. CI packs an explicit list and fails if the archive contents change.
+
+**Video is muxed rather than taken pre-muxed.** YouTube's pre-muxed streams top out at 360p — on
+every video measured, a single 360p stream was the only pre-muxed option. The extractor instead
+takes a container-matched video-only and audio-only pair and joins them with `ffmpeg -c copy`, which
+costs no re-encode. Pairing across containers is what would break: it downloads fine and then fails
+the copy, because webm cannot carry AAC. `ManagedYouTubeStreamSelectionTests` pins that behaviour.
+
+**No path re-encodes video.** With yt-dlp the format selector asks for an already-muxed file
+and ffmpeg stream-copies it; with the bundled extractor the pair is joined with `-c copy`.
+Re-encoding to VP9 was measured at roughly 0.27x realtime on four cores, which turns a
+normal-length theme into minutes of full-CPU work, against seconds for a copy. Audio is still
+encoded to MP3, because that is what Jellyfin theme songs are.
 
 **The pasted YouTube URL never reaches the command line.** It is reduced server-side
 to an eleven-character video ID, the URL is rebuilt from that ID, and it is passed

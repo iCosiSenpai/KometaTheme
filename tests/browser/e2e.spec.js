@@ -132,12 +132,25 @@ test('YouTube import asks for OP/ED and format, then posts the link', async ({ p
   expect(errors).toEqual([]);
 });
 
-test('YouTube import card stays hidden when the extractor is missing', async ({ page }) => {
+test('YouTube import is offered out of the box, with nothing to install', async ({ page }) => {
+  // The default fixture reports the bundled backend, which is what a stock install looks like.
+  const errors = await installJellyfinMocks(page);
+  await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
+
+  await expect(page.locator('#ktYtCard')).toBeVisible();
+  await expect(page.locator('#ktYtForm')).toBeVisible();
+  await expect(page.locator('#ktYtUrl')).toBeVisible();
+  // No instruction to go and install anything reaches this page.
+  await expect(page.locator('body')).not.toContainText('yt-dlp');
+  expect(errors).toEqual([]);
+});
+
+test('YouTube import card stays hidden when the configured yt-dlp path is broken', async ({ page }) => {
   const errors = await installJellyfinMocks(page);
   await page.route('**/Plugins/KometaThemes/YouTube/status', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ enabled: true, available: false, executablePath: '', error: 'yt-dlp was not found.' })
+    body: JSON.stringify({ enabled: true, available: false, backend: 'yt-dlp', executablePath: '/nope/yt-dlp', error: 'The configured yt-dlp path does not exist.' })
   }));
 
   await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
@@ -155,7 +168,7 @@ test('YouTube import card stays hidden when the feature is turned off', async ({
   await page.route('**/Plugins/KometaThemes/YouTube/status', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ enabled: false, available: false, executablePath: '', error: '' })
+    body: JSON.stringify({ enabled: false, available: false, backend: 'bundled', executablePath: '', error: '' })
   }));
 
   await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');

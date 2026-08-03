@@ -8,6 +8,12 @@
     <Nullable>enable</Nullable>
     <AnalysisMode>AllEnabledByDefault</AnalysisMode>
     <CodeAnalysisRuleSet>../jellyfin.ruleset</CodeAnalysisRuleSet>
+    <!-- A class library does not copy package assemblies to the output folder by default, which
+         is why a DLL-only package used to be enough. YoutubeExplode is not shipped by the Jellyfin
+         server, so its assemblies have to travel with the plugin and therefore have to be present
+         in the build output. The release archive still lists what it packs explicitly, so the
+         Jellyfin assemblies that also land here are never shipped. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,6 +37,9 @@
   <ItemGroup>
     <PackageReference Include="Polly" Version="8.6.5" />
     <PackageReference Include="System.Threading.RateLimiting" Version="9.0.0" />
+    <!-- Managed YouTube extractor, so the feature works without an external binary. Its assemblies
+         and those of its two dependencies are packed with the plugin; see the release archive. -->
+    <PackageReference Include="YoutubeExplode" Version="6.6.0" />
     <PackageReference Include="SerilogAnalyzer" Version="0.15.0" PrivateAssets="All" />
     <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556" PrivateAssets="All" />
     <PackageReference Include="SmartAnalyzers.MultithreadingAnalyzer" Version="1.1.31" PrivateAssets="All" />

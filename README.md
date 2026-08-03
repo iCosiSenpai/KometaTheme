@@ -42,7 +42,7 @@ what it could not resolve so it does not keep searching for it on every run.
 | **Runtime** | .NET 9, provided by the supported Jellyfin release |
 | **Administrator account** | Required for configuration and every plugin action |
 | **File Transformation** | Optional — only for the ♪ shortcut on item pages |
-| **yt-dlp** | Optional — only for YouTube import |
+| **yt-dlp** | Optional — YouTube import works without it; installing it makes the extractor more resilient |
 
 ## Installation
 
@@ -102,10 +102,14 @@ Paste a link in the Theme Finder and you are asked whether it is an OP or an ED,
 and whether you want audio, video or both. Files are written with the same layout and naming
 as a normal sync and are marked as imported, so a later sync never deletes them as orphans.
 
-This feature is **off by default**. Enable it in **Themes & Download → YouTube import**,
-which also reports whether `yt-dlp` was found and lets you set its path. `yt-dlp` must be
-installed inside the Jellyfin environment — in Docker that means inside the container, not
-on the host.
+This feature is **off by default**. Enable it in **Themes & Download → YouTube import**. Nothing
+needs to be installed: the extractor ships inside the plugin package, so import works on a stock
+Jellyfin server.
+
+If `yt-dlp` happens to be installed in the Jellyfin environment it is detected and used instead,
+with no configuration. That is worth doing on a server you maintain: yt-dlp is updated continuously
+against YouTube's changes, while the bundled extractor is pinned and only moves when this plugin is
+released. The settings page reports which of the two is in use.
 
 Accepted links are `watch`, `youtu.be`, Shorts, YouTube Music and embeds. Playlists are
 ignored: only the linked video is imported. Check the terms of service and the copyright
@@ -145,7 +149,7 @@ Deletion only ever touches files the plugin recorded as its own, so your own art
 ## Documentation
 
 - [Configuration reference](docs/configuration.md) — every tab, fetch modes, matching, security behaviour
-- [Troubleshooting](docs/troubleshooting.md) — themes not playing, missing ♪ shortcut, yt-dlp not found
+- [Troubleshooting](docs/troubleshooting.md) — themes not playing, missing ♪ shortcut, YouTube import not offered
 - [REST API](docs/api.md) — every endpoint
 - [Development](docs/development.md) — build, tests, architecture, release flow
 

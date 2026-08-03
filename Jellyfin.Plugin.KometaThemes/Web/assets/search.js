@@ -996,10 +996,11 @@
         return KT.api.get('Plugins/KometaThemes/YouTube/status').then(function (status) {
             state.youtube = status || { enabled: false, available: false };
 
-            /* The Theme Finder only ever offers an import that can actually run. A disabled
-               feature or a missing extractor is an administrative matter, reported on the plugin
-               settings page next to the setting that fixes it — showing it here would put an
-               install instruction in front of somebody who only wanted to add a theme. */
+            /* The Theme Finder only ever offers an import that can actually run. The extractor
+               ships with the plugin, so this normally shows: it hides when the feature has not
+               been enabled, or when a yt-dlp path was configured by hand and does not resolve —
+               both of which are settings-page matters, reported next to the setting that fixes
+               them rather than in front of somebody who only wanted to add a theme. */
             if (!state.youtube.enabled || !state.youtube.available) {
                 card.style.display = 'none';
                 return;

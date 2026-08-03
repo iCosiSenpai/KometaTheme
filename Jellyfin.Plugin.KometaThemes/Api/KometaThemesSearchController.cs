@@ -422,7 +422,7 @@ public sealed class KometaThemesSearchController : ControllerBase
     }
 
     /// <summary>
-    /// Reports whether YouTube import is enabled and whether the external extractor is installed.
+    /// Reports whether YouTube import is enabled and which extractor backend will be used.
     /// </summary>
     /// <returns>Availability details for the Theme Finder UI.</returns>
     [HttpGet("YouTube/status")]
@@ -435,6 +435,7 @@ public sealed class KometaThemesSearchController : ControllerBase
         {
             enabled = config.EnableYouTubeImport,
             available = availability.Available,
+            backend = availability.Backend,
             executablePath = availability.Available ? availability.ExecutablePath : string.Empty,
             error = availability.Error
         });

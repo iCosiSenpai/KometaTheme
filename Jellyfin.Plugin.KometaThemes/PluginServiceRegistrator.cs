@@ -57,6 +57,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<ThemeLinkRepairService>();
 
         // YouTube theme import (external yt-dlp extractor)
+        serviceCollection.AddSingleton<YouTube.ManagedYouTubeExtractor>();
         serviceCollection.AddSingleton<YouTube.YouTubeImportService>();
 
         // Library event handler for real-time sync on new items
@@ -104,5 +105,16 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
                 c.DefaultRequestHeaders.UserAgent.Add(productHeader);
             })
             .AddHttpMessageHandler<PollyResilienceHandler>();
+
+        // Client for the bundled YouTube extractor. No rate-limiting handler: the extractor issues
+        // its own chunked range requests for one video at a time, and the plugin-wide ffmpeg cap
+        // already bounds how many imports run at once. No resilience handler either, because the
+        // extractor implements its own retry behaviour over those chunks and a second layer of
+        // retries would multiply them. The timeout covers a streamed body, so it is generous.
+        serviceCollection.AddHttpClient("YouTube", c =>
+        {
+            c.DefaultRequestHeaders.UserAgent.Add(productHeader);
+            c.Timeout = TimeSpan.FromMinutes(10);
+        });
     }
 }

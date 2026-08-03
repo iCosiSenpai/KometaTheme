@@ -62,13 +62,14 @@
         restore: 'Restore', restored: 'Item restored',
         colName: 'Name', colType: 'Type', colYear: 'Year', colReason: 'Reason', colWhen: 'When', colActions: '',
         ytTitle: 'YouTube import',
-        ytNote: 'Lets you add openings and endings that animethemes.moe does not have, by pasting a YouTube link in the Theme Finder. Needs the yt-dlp program installed in the Jellyfin environment.',
+        ytNote: 'Lets you add openings and endings that animethemes.moe does not have, by pasting a YouTube link in the Theme Finder. Works out of the box: the extractor ships with the plugin.',
         ytEnable: 'Allow importing themes from YouTube links',
         ytEnableDesc: 'Off by default. Check the terms of use and the copyright rules that apply where you are before enabling this.',
-        ytPath: 'yt-dlp path',
-        ytPathDesc: 'Leave empty to detect it automatically from the usual locations and PATH.',
-        ytFound: 'yt-dlp found: {path}',
-        ytMissing: 'yt-dlp was not found. Install it in the Jellyfin environment, or set its full path above.',
+        ytPath: 'yt-dlp path (optional)',
+        ytPathDesc: 'Leave empty to use the bundled extractor. If yt-dlp is installed it is detected automatically and preferred, because it keeps up with YouTube changes faster than a bundled copy can. Set a full path only to point at a specific binary.',
+        ytBackendBundled: 'Ready. Using the extractor bundled with the plugin — nothing to install.',
+        ytBackendYtDlp: 'Using yt-dlp: {path}',
+        ytBackendBroken: 'The configured yt-dlp path does not exist. Clear the field to use the bundled extractor.',
         playlistTitle: 'Themes playlist',
         playlistNote: 'Builds an M3U playlist containing every theme you have downloaded. Refresh rebuilds it; Export M3U saves it to a file.',
         enablePlaylist: 'Maintain a global themes playlist',
@@ -296,8 +297,9 @@
         panel.appendChild(hint);
     }
 
-    /* Reports whether the external extractor was actually found, so an enabled-but-missing
-       yt-dlp is visible here instead of only failing at import time. */
+    /* Reports which backend import will use. The bundled extractor means this is normally a
+       confirmation rather than a problem; the error case is a yt-dlp path set by hand that does
+       not resolve, which is worth surfacing because the administrator asked for that binary. */
     function ytStatusRow() {
         var row = util.el('div', 'kt-state');
         row.id = 'ktYtDlpStatus';
@@ -306,17 +308,20 @@
 
         KT.api.get('Plugins/KometaThemes/YouTube/status').then(function (status) {
             util.clear(row);
-            if (status && status.available) {
+            if (status && status.available && status.backend === 'yt-dlp') {
                 row.className = 'kt-state success';
-                row.appendChild(document.createTextNode(KT.t('ytFound', { path: status.executablePath })));
+                row.appendChild(document.createTextNode(KT.t('ytBackendYtDlp', { path: status.executablePath })));
+            } else if (status && status.available) {
+                row.className = 'kt-state success';
+                row.appendChild(document.createTextNode(KT.t('ytBackendBundled')));
             } else {
                 row.className = 'kt-state error';
-                row.appendChild(document.createTextNode((status && status.error) || KT.t('ytMissing')));
+                row.appendChild(document.createTextNode((status && status.error) || KT.t('ytBackendBroken')));
             }
         }).catch(function () {
             util.clear(row);
             row.className = 'kt-state';
-            row.appendChild(document.createTextNode(KT.t('ytMissing')));
+            row.appendChild(document.createTextNode(KT.t('ytBackendBundled')));
         });
 
         return row;

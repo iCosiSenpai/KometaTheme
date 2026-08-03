@@ -55,7 +55,18 @@
 ### Release Flow
 1. Bump version in `Directory.Build.props` and HTML badges
 2. `dotnet build -c Release`
-3. `zip -j KometaThemes.zip bin/Release/net9.0/Jellyfin.Plugin.KometaThemes.dll`
+3. Package **four** DLLs, not one — the managed YouTube extractor travels with the plugin:
+   ```bash
+   out=Jellyfin.Plugin.KometaThemes/bin/Release/net9.0
+   zip -j KometaThemes.zip \
+     "$out/Jellyfin.Plugin.KometaThemes.dll" \
+     "$out/YoutubeExplode.dll" \
+     "$out/AngleSharp.dll" \
+     "$out/JsonExtensions.dll"
+   ```
+   Never `zip -j "$out"/*.dll`: the build also emits ~30 Jellyfin and Microsoft.Extensions
+   assemblies there, and shipping those puts a second copy of the server's own types in the
+   plugin folder. CI fails if the archive contents change.
 4. `md5sum KometaThemes.zip` → get checksum
 5. `gh release create v2.X.Y.Z KometaThemes.zip --repo iCosiSenpai/KometaTheme`
 6. Update `iCosiSenpai-Plugins/manifest.json` with new version entry (version, changelog, targetAbi, sourceUrl, checksum, timestamp)

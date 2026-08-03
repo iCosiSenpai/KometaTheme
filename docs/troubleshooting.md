@@ -16,14 +16,19 @@ web client with `Ctrl+Shift+R`.
 The shortcut is deliberately narrow: it is visible only to administrators, only on
 series and movie pages, and only when the owning library matches `Library Pattern`.
 
-## YouTube import reports that yt-dlp was not found
+## YouTube import is not offered in the Theme Finder
 
-Install `yt-dlp` inside the Jellyfin environment. In a Docker setup that means inside
-the Jellyfin container, not on the host.
+The import card is only shown when it can actually work, so its absence means one of two
+things.
 
-The settings page reports every location it searched, which includes the usual install
-paths and everything on `PATH`. If your install lives somewhere unusual, set the full
-path in **yt-dlp path**.
+Either the feature is off — it is off by default, and lives in **Themes & Download → YouTube
+import**. Or a `yt-dlp path` was set by hand and does not resolve; clearing that field falls
+back to the extractor bundled with the plugin. The settings page says which case you are in,
+directly below those two settings.
+
+Nothing has to be installed for import to work. If `yt-dlp` is present it is preferred
+automatically, because it tracks YouTube's changes faster than a bundled copy can, but it is
+not required.
 
 ## An item never resolves
 

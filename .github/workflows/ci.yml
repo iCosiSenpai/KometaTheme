@@ -62,7 +62,32 @@ jobs:
         if: success()
         run: |
           mkdir -p artifacts
-          zip -j artifacts/KometaThemes.zip Jellyfin.Plugin.KometaThemes/bin/Release/net9.0/Jellyfin.Plugin.KometaThemes.dll
+          out=Jellyfin.Plugin.KometaThemes/bin/Release/net9.0
+
+          # Explicit list, not the whole output folder. Building with
+          # CopyLocalLockFileAssemblies also drops ~30 Jellyfin and Microsoft.Extensions
+          # assemblies there; shipping those would put a second copy of the server's own
+          # types next to it. Only the plugin and the extractor it needs travel.
+          zip -j artifacts/KometaThemes.zip \
+            "$out/Jellyfin.Plugin.KometaThemes.dll" \
+            "$out/YoutubeExplode.dll" \
+            "$out/AngleSharp.dll" \
+            "$out/JsonExtensions.dll"
+
+          echo "--- archive contents ---"
+          unzip -l artifacts/KometaThemes.zip
+
+          # Fail the build if the archive ever gains or loses a file, so a dependency
+          # change cannot silently ship or silently go missing at runtime.
+          actual=$(unzip -Z1 artifacts/KometaThemes.zip | sort | tr '\n' ' ')
+          expected="AngleSharp.dll Jellyfin.Plugin.KometaThemes.dll JsonExtensions.dll YoutubeExplode.dll "
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::unexpected package contents"
+            echo "expected: $expected"
+            echo "actual:   $actual"
+            exit 1
+          fi
+
           md5sum artifacts/KometaThemes.zip
 
       - name: Upload plugin artifact

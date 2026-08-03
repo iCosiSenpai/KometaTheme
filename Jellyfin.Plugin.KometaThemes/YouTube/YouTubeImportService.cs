@@ -13,19 +13,20 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.KometaThemes.YouTube;
 
 /// <summary>
-/// Fetches YouTube media to a local temporary file using an external <c>yt-dlp</c> binary.
+/// Fetches YouTube media to a local temporary file, either with the managed extractor bundled with
+/// the plugin or with an external <c>yt-dlp</c> binary.
 /// </summary>
 /// <remarks>
 /// <para>
-/// An external process rather than a managed library, for two reasons. First, the plugin's release
-/// artifact is a single DLL with no side-by-side dependencies, so any NuGet package added here would
-/// simply not be present at runtime. Second, YouTube's player changes frequently; yt-dlp is updated
-/// continuously by its own maintainers, whereas a pinned managed extractor would break on the
-/// server's schedule and require a plugin release to fix.
+/// The bundled extractor is what makes the feature work on a stock Jellyfin install: nothing has to
+/// be installed by hand, which is how comparable Jellyfin plugins behave. Its assemblies travel
+/// inside the plugin package.
 /// </para>
 /// <para>
-/// The trade-off is that yt-dlp must be installed in the Jellyfin environment. That is reported
-/// explicitly through <see cref="GetAvailability"/> so the UI can say so instead of failing opaquely.
+/// When <c>yt-dlp</c> is present it is used instead, because it is updated continuously against
+/// YouTube's changes by its own maintainers, whereas the bundled extractor is pinned and only moves
+/// when this plugin is released. So the default works out of the box, and installing yt-dlp buys
+/// resilience without any configuration.
 /// </para>
 /// </remarks>
 public sealed class YouTubeImportService
@@ -88,20 +89,26 @@ public sealed class YouTubeImportService
 
     private readonly ILogger<YouTubeImportService> _logger;
     private readonly IApplicationPaths _applicationPaths;
+    private readonly ManagedYouTubeExtractor _managed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="YouTubeImportService"/> class.
     /// </summary>
     /// <param name="logger">Logger instance.</param>
     /// <param name="applicationPaths">Server paths, used for the scratch directory.</param>
-    public YouTubeImportService(ILogger<YouTubeImportService> logger, IApplicationPaths applicationPaths)
+    /// <param name="managed">The extractor bundled with the plugin.</param>
+    public YouTubeImportService(
+        ILogger<YouTubeImportService> logger,
+        IApplicationPaths applicationPaths,
+        ManagedYouTubeExtractor managed)
     {
         _logger = logger;
         _applicationPaths = applicationPaths;
+        _managed = managed;
     }
 
     /// <summary>
-    /// Reports whether the extractor is usable, and where it was found.
+    /// Reports which backend will be used, and whether an import can be attempted.
     /// </summary>
     /// <returns>Availability details for the UI.</returns>
     public YouTubeAvailability GetAvailability()
@@ -109,18 +116,21 @@ public sealed class YouTubeImportService
         var configured = Plugin.Instance?.Configuration?.YtDlpPath;
         if (!string.IsNullOrWhiteSpace(configured))
         {
+            // An explicitly configured path that does not exist is a mistake worth reporting rather
+            // than silently working around, since the administrator asked for that binary.
             return File.Exists(configured)
-                ? new YouTubeAvailability(true, configured, string.Empty)
-                : new YouTubeAvailability(false, configured, "The configured yt-dlp path does not exist.");
+                ? new YouTubeAvailability(true, YouTubeAvailability.YtDlpBackend, configured, string.Empty)
+                : new YouTubeAvailability(
+                    false,
+                    YouTubeAvailability.YtDlpBackend,
+                    configured,
+                    "The configured yt-dlp path does not exist.");
         }
 
         var resolved = ResolveExecutable();
         return resolved != null
-            ? new YouTubeAvailability(true, resolved, string.Empty)
-            : new YouTubeAvailability(
-                false,
-                string.Empty,
-                "yt-dlp was not found. Install it in the Jellyfin environment, or set its full path in the plugin settings.");
+            ? new YouTubeAvailability(true, YouTubeAvailability.YtDlpBackend, resolved, string.Empty)
+            : new YouTubeAvailability(true, YouTubeAvailability.BundledBackend, string.Empty, string.Empty);
     }
 
     /// <summary>
@@ -150,6 +160,24 @@ public sealed class YouTubeImportService
 
         try
         {
+            if (!availability.UsesYtDlp)
+            {
+                var managedResult = await _managed.DownloadAsync(
+                    videoId,
+                    audioOnly,
+                    workDirectory,
+                    MaxDurationSeconds,
+                    (long)MaxFileSizeMegabytes * 1024 * 1024,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (!managedResult.Success)
+                {
+                    TryCleanup(workDirectory);
+                }
+
+                return managedResult;
+            }
+
             var outputTemplate = Path.Combine(workDirectory, "source.%(ext)s");
             var arguments = new List<string>
             {
