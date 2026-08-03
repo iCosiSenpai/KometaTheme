@@ -26,7 +26,10 @@
 
 ### 🌍 Choose your language · Scegli la lingua
 
-**Click a bar below to open that language.** Both stay on this page — nothing navigates away.
+**Click a language to switch to it.** Opening one closes the other, and you never leave this page.
+
+<sub>Uses the native HTML exclusive-accordion behaviour — no JavaScript, since GitHub strips it.<br />
+On browsers older than Chrome&nbsp;120 / Safari&nbsp;17.2 / Firefox&nbsp;130 both simply stay expandable.</sub>
 
 </div>
 
@@ -36,10 +39,10 @@
 
 <a id="english"></a>
 
-<details open>
+<details name="readme-language" open>
 <summary>
-  <img src="https://img.shields.io/badge/%F0%9F%87%AC%F0%9F%87%A7%20English-Read%20the%20docs-00a4dc?style=for-the-badge&labelColor=1a1a2e" alt="English documentation" />
-  &nbsp;<sub>click to collapse</sub>
+  <picture><img src="https://img.shields.io/badge/%F0%9F%87%AC%F0%9F%87%A7%20English-Read%20the%20docs-00a4dc?style=for-the-badge&labelColor=1a1a2e" alt="English documentation" /></picture>
+  <kbd>&nbsp;Read in English&nbsp;</kbd>
 </summary>
 
 <br />
@@ -412,10 +415,10 @@ KometaThemes uses `Major.Minor.Build.Revision`. Feature work increments Minor or
 
 <a id="italiano"></a>
 
-<details>
+<details name="readme-language">
 <summary>
-  <img src="https://img.shields.io/badge/%F0%9F%87%AE%F0%9F%87%B9%20Italiano-Leggi%20la%20documentazione-7c5cff?style=for-the-badge&labelColor=1a1a2e" alt="Documentazione in italiano" />
-  &nbsp;<sub>clicca per aprire</sub>
+  <picture><img src="https://img.shields.io/badge/%F0%9F%87%AE%F0%9F%87%B9%20Italiano-Leggi%20la%20documentazione-7c5cff?style=for-the-badge&labelColor=1a1a2e" alt="Documentazione in italiano" /></picture>
+  <kbd>&nbsp;Leggi in italiano&nbsp;</kbd>
 </summary>
 
 <br />
