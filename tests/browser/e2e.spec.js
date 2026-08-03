@@ -132,7 +132,7 @@ test('YouTube import asks for OP/ED and format, then posts the link', async ({ p
   expect(errors).toEqual([]);
 });
 
-test('YouTube import card explains itself when the extractor is missing', async ({ page }) => {
+test('YouTube import card stays hidden when the extractor is missing', async ({ page }) => {
   const errors = await installJellyfinMocks(page);
   await page.route('**/Plugins/KometaThemes/YouTube/status', route => route.fulfill({
     status: 200,
@@ -142,8 +142,25 @@ test('YouTube import card explains itself when the extractor is missing', async 
 
   await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
 
-  await expect(page.locator('#ktYtUnavailable')).toContainText('yt-dlp was not found.');
+  // Nothing about the extractor reaches this page: no card, no form, and none of the
+  // server's text anywhere in the document.
+  await expect(page.locator('#ktYtCard')).toBeHidden();
   await expect(page.locator('#ktYtForm')).toBeHidden();
+  await expect(page.locator('body')).not.toContainText('yt-dlp');
+  expect(errors).toEqual([]);
+});
+
+test('YouTube import card stays hidden when the feature is turned off', async ({ page }) => {
+  const errors = await installJellyfinMocks(page);
+  await page.route('**/Plugins/KometaThemes/YouTube/status', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ enabled: false, available: false, executablePath: '', error: '' })
+  }));
+
+  await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
+
+  await expect(page.locator('#ktYtCard')).toBeHidden();
   expect(errors).toEqual([]);
 });
 

@@ -58,7 +58,6 @@
         ytTitleLabel: 'Theme name (optional)',
         ytTitleHint: 'Leave empty to use the video title.',
         ytDone: 'Imported {ok} file(s), {fail} failed',
-        ytDisabled: 'YouTube import is turned off. Enable it in the KometaThemes settings.',
         ytLongRunning: 'This can take a while: the video is downloaded and then converted.'
     });
 
@@ -993,31 +992,20 @@
     function loadYouTubeStatus() {
         var card = q('ktYtCard');
         var form = q('ktYtForm');
-        var unavailable = q('ktYtUnavailable');
 
         return KT.api.get('Plugins/KometaThemes/YouTube/status').then(function (status) {
             state.youtube = status || { enabled: false, available: false };
+
+            /* The Theme Finder only ever offers an import that can actually run. A disabled
+               feature or a missing extractor is an administrative matter, reported on the plugin
+               settings page next to the setting that fixes it — showing it here would put an
+               install instruction in front of somebody who only wanted to add a theme. */
+            if (!state.youtube.enabled || !state.youtube.available) {
+                card.style.display = 'none';
+                return;
+            }
+
             card.style.display = '';
-
-            if (!state.youtube.enabled) {
-                form.style.display = 'none';
-                unavailable.style.display = '';
-                unavailable.className = 'kt-state';
-                util.clear(unavailable);
-                unavailable.appendChild(document.createTextNode(KT.t('ytDisabled')));
-                return;
-            }
-
-            if (!state.youtube.available) {
-                form.style.display = 'none';
-                unavailable.style.display = '';
-                unavailable.className = 'kt-state error';
-                util.clear(unavailable);
-                unavailable.appendChild(document.createTextNode(state.youtube.error || KT.t('error')));
-                return;
-            }
-
-            unavailable.style.display = 'none';
             form.style.display = '';
         }).catch(function () {
             // An older server without this endpoint simply hides the feature.

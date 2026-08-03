@@ -7,7 +7,7 @@
 
     // Guard against double-loading the exact same version of core.
     // Bump this string on every meaningful change to kometa-core.js (keeps in sync with Directory.Build.props + HTML V=).
-    var CURRENT_VERSION = '1.3.0.0';
+    var CURRENT_VERSION = '1.3.1.0';
     if (window.KT && window.KT.VERSION === CURRENT_VERSION) { return; }
 
     var KT = {
