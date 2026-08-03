@@ -46,17 +46,11 @@ internal static class LibrarySelection
     }
 
     /// <summary>
-    /// Returns a localized "not eligible" error message based on the plugin's UiLanguage.
+    /// Returns the "not eligible" error message.
     /// </summary>
-    /// <param name="config">Plugin configuration (for UiLanguage).</param>
-    /// <returns>Localized error string.</returns>
-    public static string GetNotEligibleErrorMessage(PluginConfiguration config)
+    /// <returns>Error string.</returns>
+    public static string GetNotEligibleErrorMessage()
     {
-        var lang = (config?.UiLanguage ?? "en").Trim().ToLowerInvariant();
-        if (lang.StartsWith("it", StringComparison.Ordinal))
-        {
-            return "L'elemento non appartiene a una libreria che corrisponde al Library Pattern configurato (es. 'Anime').";
-        }
         return "Item is not in a library matching the configured Library Pattern (e.g. 'Anime').";
     }
 

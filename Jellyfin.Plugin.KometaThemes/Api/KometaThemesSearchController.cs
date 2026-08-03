@@ -112,7 +112,7 @@ public sealed class KometaThemesSearchController : ControllerBase
             if (!LibrarySelection.IsItemEligible(item, _libraryManager, config))
             {
                 _logger.LogWarning("Theme Finder search rejected for non-eligible item {ItemId}", itemId);
-                var errorMsg = LibrarySelection.GetNotEligibleErrorMessage(config);
+                var errorMsg = LibrarySelection.GetNotEligibleErrorMessage();
                 return BadRequest(new { error = errorMsg });
             }
         }
@@ -347,7 +347,7 @@ public sealed class KometaThemesSearchController : ControllerBase
         if (!LibrarySelection.IsItemEligible(item, _libraryManager, config))
         {
             _logger.LogWarning("Theme Finder action rejected for non-eligible item {ItemId}", itemId);
-            var errorMsg = LibrarySelection.GetNotEligibleErrorMessage(config);
+            var errorMsg = LibrarySelection.GetNotEligibleErrorMessage();
             return BadRequest(new { error = errorMsg });
         }
 
@@ -494,7 +494,7 @@ public sealed class KometaThemesSearchController : ControllerBase
         if (!LibrarySelection.IsItemEligible(item, _libraryManager, config))
         {
             _logger.LogWarning("YouTube import rejected for non-eligible item {ItemId}", itemId);
-            return BadRequest(new { error = LibrarySelection.GetNotEligibleErrorMessage(config) });
+            return BadRequest(new { error = LibrarySelection.GetNotEligibleErrorMessage() });
         }
 
         if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
@@ -710,7 +710,7 @@ public sealed class KometaThemesSearchController : ControllerBase
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
         if (!LibrarySelection.IsItemEligible(item, _libraryManager, config))
         {
-            var errorMsg = LibrarySelection.GetNotEligibleErrorMessage(config);
+            var errorMsg = LibrarySelection.GetNotEligibleErrorMessage();
             return BadRequest(new { error = errorMsg });
         }
 

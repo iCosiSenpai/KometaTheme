@@ -57,7 +57,6 @@ public class PluginConfiguration : BasePluginConfiguration
         MovieSettings = new CollectionTypeConfiguration();
 
         // KometaThemes extensions
-        UiLanguage = "en";
         // NOTE: do NOT seed ProviderPriority here. XmlSerializer appends to a
         // pre-populated collection on deserialize (it never clears it), so seeding
         // defaults in the constructor makes the saved list grow by 5 every load/save
@@ -121,11 +120,6 @@ public class PluginConfiguration : BasePluginConfiguration
     public CollectionTypeConfiguration MovieSettings { get; set; }
 
     // ── KometaThemes Extensions ──
-
-    /// <summary>
-    /// Gets or sets the plugin UI language.
-    /// </summary>
-    public string UiLanguage { get; set; }
 
 #pragma warning disable CA2227
     /// <summary>

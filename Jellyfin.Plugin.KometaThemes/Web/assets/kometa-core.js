@@ -7,7 +7,7 @@
 
     // Guard against double-loading the exact same version of core.
     // Bump this string on every meaningful change to kometa-core.js (keeps in sync with Directory.Build.props + HTML V=).
-    var CURRENT_VERSION = '1.2.0.0';
+    var CURRENT_VERSION = '1.3.0.0';
     if (window.KT && window.KT.VERSION === CURRENT_VERSION) { return; }
 
     var KT = {
@@ -206,10 +206,7 @@
 
     KT.config = {
         load: function () {
-            return ApiClient.getPluginConfiguration(KT.GUID).then(function (config) {
-                KT.i18n.setLang(config.UiLanguage || 'en');
-                return config;
-            });
+            return ApiClient.getPluginConfiguration(KT.GUID);
         },
         save: function (config) {
             return ApiClient.updatePluginConfiguration(KT.GUID, config);
@@ -218,51 +215,28 @@
 
     /* ---------------- i18n ---------------- */
 
-    var dict = {
-        en: {
-            save: 'Save', discard: 'Discard', cancel: 'Cancel', confirm: 'Confirm',
-            close: 'Close', refresh: 'Refresh', loading: 'Loading…', retry: 'Retry',
-            saved: 'Settings saved', saveFailed: 'Save failed', error: 'Something went wrong',
-            audio: 'Audio', video: 'Video', downloaded: 'Downloaded', missing: 'Missing',
-            preview: 'Preview', delete: 'Delete', deleteAll: 'Delete all',
-            syncNow: 'Sync now', dryRun: 'Dry run', syncRunning: 'Sync in progress…',
-            syncDone: 'Sync finished', syncStartFailed: 'Could not start sync',
-            phase: 'Phase', processed: 'Processed', resolved: 'Resolved',
-            downloadedCount: 'Downloaded', failed: 'Failed', skipped: 'Skipped',
-            idle: 'Idle', never: 'Never', unsavedChanges: 'Unsaved changes',
-            confirmTitle: 'Are you sure?', themeFinder: 'Theme Finder',
-            openThemeFinder: 'Open Theme Finder', settings: 'Settings', copy: 'Copy', copied: 'Copied',
-            supportLabel: 'Enjoying KometaThemes? Support its development.', supportCoffee: 'Buy me a coffee', supportPayPal: 'Donate with PayPal', supportGitHub: 'Open on GitHub',
-            invalidRemoteUrl: 'Blocked an invalid or insecure remote URL', openOnSource: 'Open on source',
-            dotIdle: 'No sync running', dotRunning: 'Sync in progress', dotError: 'Last sync failed'
-        },
-        it: {
-            save: 'Salva', discard: 'Annulla modifiche', cancel: 'Annulla', confirm: 'Conferma',
-            close: 'Chiudi', refresh: 'Aggiorna', loading: 'Caricamento…', retry: 'Riprova',
-            saved: 'Impostazioni salvate', saveFailed: 'Salvataggio fallito', error: 'Qualcosa è andato storto',
-            audio: 'Audio', video: 'Video', downloaded: 'Scaricato', missing: 'Mancante',
-            preview: 'Anteprima', delete: 'Elimina', deleteAll: 'Elimina tutti',
-            syncNow: 'Sync ora', dryRun: 'Dry run', syncRunning: 'Sync in corso…',
-            syncDone: 'Sync completato', syncStartFailed: 'Impossibile avviare il sync',
-            phase: 'Fase', processed: 'Processati', resolved: 'Risolti',
-            downloadedCount: 'Scaricati', failed: 'Falliti', skipped: 'Saltati',
-            idle: 'Inattivo', never: 'Mai', unsavedChanges: 'Modifiche non salvate',
-            confirmTitle: 'Sei sicuro?', themeFinder: 'Theme Finder',
-            openThemeFinder: 'Apri Theme Finder', settings: 'Impostazioni', copy: 'Copia', copied: 'Copiato',
-            supportLabel: 'KometaThemes ti è utile? Supporta lo sviluppo.', supportCoffee: 'Offrimi un caffè', supportPayPal: 'Dona con PayPal', supportGitHub: 'Apri su GitHub',
-            invalidRemoteUrl: 'URL remoto non valido o non sicuro bloccato', openOnSource: 'Apri sulla fonte',
-            dotIdle: 'Nessun sync in corso', dotRunning: 'Sync in corso', dotError: 'Ultimo sync fallito'
-        }
+    var strings = {
+        save: 'Save', discard: 'Discard', cancel: 'Cancel', confirm: 'Confirm',
+        close: 'Close', refresh: 'Refresh', loading: 'Loading…', retry: 'Retry',
+        saved: 'Settings saved', saveFailed: 'Save failed', error: 'Something went wrong',
+        audio: 'Audio', video: 'Video', downloaded: 'Downloaded', missing: 'Missing',
+        preview: 'Preview', delete: 'Delete', deleteAll: 'Delete all',
+        syncNow: 'Sync now', dryRun: 'Dry run', syncRunning: 'Sync in progress…',
+        syncDone: 'Sync finished', syncStartFailed: 'Could not start sync',
+        phase: 'Phase', processed: 'Processed', resolved: 'Resolved',
+        downloadedCount: 'Downloaded', failed: 'Failed', skipped: 'Skipped',
+        idle: 'Idle', never: 'Never', unsavedChanges: 'Unsaved changes',
+        confirmTitle: 'Are you sure?', themeFinder: 'Theme Finder',
+        openThemeFinder: 'Open Theme Finder', settings: 'Settings', copy: 'Copy', copied: 'Copied',
+        supportLabel: 'Enjoying KometaThemes? Support its development.', supportCoffee: 'Buy me a coffee', supportPayPal: 'Donate with PayPal', supportGitHub: 'Open on GitHub',
+        invalidRemoteUrl: 'Blocked an invalid or insecure remote URL', openOnSource: 'Open on source',
+        dotIdle: 'No sync running', dotRunning: 'Sync in progress', dotError: 'Last sync failed'
     };
 
     KT.i18n = {
-        lang: 'en',
-        setLang: function (lang) { KT.i18n.lang = dict[lang] ? lang : 'en'; },
+        /* Each page module contributes its own strings on load. */
         extend: function (extra) {
-            Object.keys(extra).forEach(function (lang) {
-                dict[lang] = dict[lang] || {};
-                Object.keys(extra[lang]).forEach(function (key) { dict[lang][key] = extra[lang][key]; });
-            });
+            Object.keys(extra).forEach(function (key) { strings[key] = extra[key]; });
         },
         apply: function (root) {
             (root || document).querySelectorAll('[data-kt]').forEach(function (node) {
@@ -278,8 +252,8 @@
     };
 
     KT.t = function (key, params) {
-        var lang = dict[KT.i18n.lang] || dict.en;
-        var text = lang[key] != null ? lang[key] : (dict.en[key] != null ? dict.en[key] : key);
+        /* An unknown key renders as itself, which is visible in the UI instead of blank. */
+        var text = strings[key] != null ? strings[key] : key;
         if (params) {
             Object.keys(params).forEach(function (name) {
                 /* Function replacement, not a string: $&, $`, $' and $1 are special in a

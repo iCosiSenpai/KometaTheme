@@ -447,7 +447,6 @@ public sealed class SyncThemesRunner
             AudioSettings = CloneMediaType(source.AudioSettings),
             VideoSettings = CloneMediaType(source.VideoSettings),
             MovieSettings = CloneCollection(source.MovieSettings),
-            UiLanguage = source.UiLanguage,
             ProviderPriority = Sites.NormalizeProviderPriority(source.ProviderPriority),
             EnableTitleFallback = source.EnableTitleFallback,
             TitleMatchThreshold = source.TitleMatchThreshold,

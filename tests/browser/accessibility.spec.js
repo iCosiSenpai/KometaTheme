@@ -18,36 +18,34 @@ async function assertAccessible(page, selector, stateLabel) {
 }
 
 for (const [label, name, pageId, itemId] of pages) {
-  for (const language of ['en', 'it']) {
-    test(label + ' (' + language + ') has no serious or critical axe violations', async ({ page }) => {
-      const errors = await installJellyfinMocks(page, { UiLanguage: language });
-      await openPluginPage(page, name, pageId, itemId);
-      await page.addStyleTag({
-        content: 'html,body{background:#10131d;color:#f5f7ff}.kt-page *,.kt-page *::before,.kt-page *::after{animation:none!important;transition:none!important}'
-      });
-
-      if (name === 'KometaThemes') {
-        await expect(page.locator('#ktCacheStats .kt-stat')).toHaveCount(4);
-        const tabs = page.locator('#ktTabs .kt-tab');
-        for (let index = 0; index < await tabs.count(); index += 1) {
-          await tabs.nth(index).click();
-          await assertAccessible(page, '#' + pageId, label + ' ' + language + ' tab ' + index);
-        }
-        await page.evaluate(() => { window.__a11yConfirm = window.KT.ui.confirm('Accessibility confirmation'); });
-        await expect(page.getByRole('alertdialog')).toBeVisible();
-        await assertAccessible(page, '.kt-modal', label + ' ' + language + ' dialog');
-        await page.keyboard.press('Escape');
-      } else {
-        await assertAccessible(page, '#' + pageId, label + ' ' + language + ' initial');
-      }
-
-      if (name === 'KometaThemesSearch') {
-        await page.locator('.kt-result').first().click();
-        await expect(page.locator('#ktAnimeCard')).toBeVisible();
-        await assertAccessible(page, '#' + pageId, label + ' ' + language + ' selected anime');
-      }
-
-      expect(errors).toEqual([]);
+  test(label + ' has no serious or critical axe violations', async ({ page }) => {
+    const errors = await installJellyfinMocks(page);
+    await openPluginPage(page, name, pageId, itemId);
+    await page.addStyleTag({
+      content: 'html,body{background:#10131d;color:#f5f7ff}.kt-page *,.kt-page *::before,.kt-page *::after{animation:none!important;transition:none!important}'
     });
-  }
+
+    if (name === 'KometaThemes') {
+      await expect(page.locator('#ktCacheStats .kt-stat')).toHaveCount(4);
+      const tabs = page.locator('#ktTabs .kt-tab');
+      for (let index = 0; index < await tabs.count(); index += 1) {
+        await tabs.nth(index).click();
+        await assertAccessible(page, '#' + pageId, label + ' tab ' + index);
+      }
+      await page.evaluate(() => { window.__a11yConfirm = window.KT.ui.confirm('Accessibility confirmation'); });
+      await expect(page.getByRole('alertdialog')).toBeVisible();
+      await assertAccessible(page, '.kt-modal', label + ' dialog');
+      await page.keyboard.press('Escape');
+    } else {
+      await assertAccessible(page, '#' + pageId, label + ' initial');
+    }
+
+    if (name === 'KometaThemesSearch') {
+      await page.locator('.kt-result').first().click();
+      await expect(page.locator('#ktAnimeCard')).toBeVisible();
+      await assertAccessible(page, '#' + pageId, label + ' selected anime');
+    }
+
+    expect(errors).toEqual([]);
+  });
 }

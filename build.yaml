@@ -1,7 +1,7 @@
 ---
 name: "KometaThemes"
 guid: "48c98707-45d1-43ac-94b8-f74d875ad29c"
-version: "1.2.0.0"
+version: "1.3.0.0"
 targetAbi: "10.11.8.0"
 framework: "net9.0"
 overview: "Plugin for Jellyfin that fetches anime themes (OPs and EDs) from animethemes.moe with multi-provider support"
@@ -15,6 +15,11 @@ owner: "KometaThemes"
 artifacts:
   - "Jellyfin.Plugin.KometaThemes.dll"
 changelog: |-
+  v1.3.0.0
+  - The plugin interface is English only. The Italian translation and the interface-language setting in the General tab have been removed; existing configurations keep working and simply ignore the stored value
+  - Season names written in Italian are still recognised. "2ª Stagione", "2° Stagione" and "stagione 2" continue to resolve to season 2, because those are library folder names the plugin reads, not interface text
+  - Interface: the language machinery is gone from the frontend, so each page ships one string table instead of two and loads slightly less script
+
   v1.2.0.0
   - YouTube import is now verified end to end and much faster. A source YouTube serves as H.264 used to be re-encoded to VP9 before it could be written, measured at roughly four times realtime — minutes of pegged CPU for one theme. The container the extractor returns is now carried through and the stream simply copied: the same 3.5 minute video went from about 13 minutes to 7 seconds
   - Fix: a theme video that turned out to contain no video track is now rejected instead of being written as a silent, picture-less backdrop
@@ -63,7 +68,7 @@ changelog: |-
   - Complete language-specific English and Italian documentation with official support and repository buttons
 
   v1.0.0.7
-  - Interface language (English / Italiano, in the General tab) now switches the whole dashboard instantly when you pick it, instead of only after saving and reopening the page
+  - Interface language (English / Italian, in the General tab) now switches the whole dashboard instantly when you pick it, instead of only after saving and reopening the page
 
   v1.0.0.6
   - Unresolved tab: each row now has a "Search & bind" button that opens the Theme Finder for that anime so you can search and attach themes manually
