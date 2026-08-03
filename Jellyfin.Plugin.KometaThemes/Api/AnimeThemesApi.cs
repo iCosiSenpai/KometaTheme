@@ -19,6 +19,12 @@ public sealed class AnimeThemesApi : IDisposable
 {
     private const string AnimeDetailInclude = "images,animethemes.animethemeentries.videos.audio,resources";
 
+    /// <summary>
+    /// Largest number of external IDs to put in one filter. Larger batches are split into pages and
+    /// merged rather than truncated.
+    /// </summary>
+    private const int MaxExternalIdsPerRequest = 100;
+
     private readonly HttpClient _client;
     private readonly ILogger<AnimeThemesApi> _logger;
 
@@ -52,10 +58,24 @@ public sealed class AnimeThemesApi : IDisposable
             idList.Length,
             site);
 
-        if (idList.Length > 100)
+        // The API caps how many IDs one filter can carry, so oversized batches are split and the
+        // pages merged. Previously the extra IDs were simply dropped after a warning, so on a
+        // library with more than 100 tagged items everything past the first 100 was reported as
+        // unresolved on every run and never even negative-cached.
+        if (idList.Length > MaxExternalIdsPerRequest)
         {
-            _logger.LogWarning("{Site} batch has {Count} IDs — paginating to 100 max per request", site, idList.Length);
-            idList = idList.Take(100).ToArray();
+            var merged = new Dictionary<string, Anime[]>(StringComparer.OrdinalIgnoreCase);
+            for (var offset = 0; offset < idList.Length; offset += MaxExternalIdsPerRequest)
+            {
+                var page = idList.Skip(offset).Take(MaxExternalIdsPerRequest).ToArray();
+                var pageResult = await FindByExternalIdsAsync(site, page, cancellationToken).ConfigureAwait(false);
+                foreach (var kvp in pageResult)
+                {
+                    merged[kvp.Key] = kvp.Value;
+                }
+            }
+
+            return merged;
         }
 
         var arguments = new Dictionary<string, string?>
@@ -70,13 +90,36 @@ public sealed class AnimeThemesApi : IDisposable
         var uri = QueryHelpers.AddQueryString("/anime/", arguments);
 
         _logger.LogInformation("Fetching from API: {Uri} (length={Length})", uri, uri.Length);
-        var result = await _client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
-        result.EnsureSuccessStatusCode();
 
-        var content = await result.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var contentDisposal = content.ConfigureAwait(false);
+        AnimeResponse? response;
+        try
+        {
+            using var result = await _client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
+            if (!result.IsSuccessStatusCode)
+            {
+                // Degrade like every other method on this client instead of throwing. An
+                // EnsureSuccessStatusCode here propagated out of the resolver and aborted
+                // resolution for all providers and all items on a single upstream 5xx.
+                _logger.LogWarning(
+                    "AnimeThemes batch lookup for {Site} returned {Status}; treating this batch as unresolved",
+                    site,
+                    (int)result.StatusCode);
+                return EmptyResultFor(idList);
+            }
 
-        var response = await JsonSerializer.DeserializeAsync<AnimeResponse>(content, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var content = await result.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using var contentDisposal = content.ConfigureAwait(false);
+            response = await JsonSerializer.DeserializeAsync<AnimeResponse>(content, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            _logger.LogWarning(ex, "AnimeThemes batch lookup for {Site} failed; treating this batch as unresolved", site);
+            return EmptyResultFor(idList);
+        }
 
         // Group results by external ID for the requested site
         var animeByExternalId = new Dictionary<string, List<Anime>>(StringComparer.OrdinalIgnoreCase);
@@ -91,7 +134,9 @@ public sealed class AnimeThemesApi : IDisposable
 
                 foreach (var resource in anime.Resources)
                 {
-                    if (resource.Site == site && resource.ExternalId.HasValue)
+                    // Ordinal-ignore-case: Sites uses "aniSearch" while NormalizeProviderId
+                    // canonicalizes to "AniSearch", and the rest of the pipeline is case-insensitive.
+                    if (string.Equals(resource.Site, site, StringComparison.OrdinalIgnoreCase) && resource.ExternalId.HasValue)
                     {
                         var key = resource.ExternalId.Value.ToString(CultureInfo.InvariantCulture);
                         if (!animeByExternalId.TryGetValue(key, out var list))
@@ -112,10 +157,33 @@ public sealed class AnimeThemesApi : IDisposable
             animeByExternalId.Count,
             site);
 
-        return idList.ToDictionary(
-            id => id,
-            id => animeByExternalId.TryGetValue(id, out var list) ? list.ToArray() : [],
-            StringComparer.OrdinalIgnoreCase);
+        var lookup = new Dictionary<string, Anime[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in idList)
+        {
+            // The API keys its response by the canonical integer form, so a provider value carrying
+            // whitespace or leading zeros used to miss here and get written to the cache as a
+            // *negative* result for a show that had actually been found.
+            if (!animeByExternalId.TryGetValue(id, out var list) &&
+                int.TryParse(id.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var numeric))
+            {
+                animeByExternalId.TryGetValue(numeric.ToString(CultureInfo.InvariantCulture), out list);
+            }
+
+            lookup[id] = list?.ToArray() ?? [];
+        }
+
+        return lookup;
+    }
+
+    private static Dictionary<string, Anime[]> EmptyResultFor(IEnumerable<string> ids)
+    {
+        var result = new Dictionary<string, Anime[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in ids)
+        {
+            result[id] = [];
+        }
+
+        return result;
     }
 
     /// <summary>

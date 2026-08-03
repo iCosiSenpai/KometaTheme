@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -14,6 +15,11 @@ namespace Jellyfin.Plugin.KometaThemes.Web;
 /// by pointing to: /Plugins/KometaThemes/ItemButton.js.
 /// </summary>
 [ApiController]
+
+// Deliberately anonymous, matching KometaWebInjectionController: this script is injected into the
+// web client shell before any session exists, so it cannot carry a token. It only returns a static
+// embedded asset. Declaring the intent keeps it from looking like a missing [Authorize].
+[AllowAnonymous]
 [Route("Plugins/KometaThemes/ItemButton.js")]
 public class KometaItemButtonController : ControllerBase
 {

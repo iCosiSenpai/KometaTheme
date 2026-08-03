@@ -4,6 +4,7 @@ using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
 using System.Net.Mime;
+using System.Threading.Tasks;
 using Jellyfin.Plugin.KometaThemes.Models;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Entities;
@@ -31,6 +32,7 @@ public class KometaThemesBindingsController : ControllerBase
     private const string RootThemeSongFileName = "theme.mp3";
 
     private readonly ILibraryManager _libraryManager;
+    private readonly DownloadTracker _downloadTracker;
     private readonly ILogger<KometaThemesBindingsController> _logger;
 
     /// <summary>
@@ -38,9 +40,11 @@ public class KometaThemesBindingsController : ControllerBase
     /// </summary>
     public KometaThemesBindingsController(
         ILibraryManager libraryManager,
+        DownloadTracker downloadTracker,
         ILogger<KometaThemesBindingsController> logger)
     {
         _libraryManager = libraryManager;
+        _downloadTracker = downloadTracker;
         _logger = logger;
     }
 
@@ -60,7 +64,9 @@ public class KometaThemesBindingsController : ControllerBase
             .OrderByDescending(b => b.BoundAt)
             .Select(b =>
             {
-                var item = _libraryManager.GetItemById(Guid.Parse(b.ItemId));
+                // Guid.Parse here turned one malformed persisted ItemId — hand-edited config, a
+                // failed migration, a torn write — into a permanent 500 for the whole listing.
+                var item = Guid.TryParse(b.ItemId, out var boundId) ? _libraryManager.GetItemById(boundId) : null;
                 return new
                 {
                     b.ItemId,
@@ -116,7 +122,7 @@ public class KometaThemesBindingsController : ControllerBase
     [HttpDelete("{itemId}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public ActionResult RemoveBinding(
+    public async Task<ActionResult> RemoveBinding(
         [FromRoute, Required] Guid itemId,
         [FromQuery] bool deleteFiles = false)
     {
@@ -143,7 +149,7 @@ public class KometaThemesBindingsController : ControllerBase
         var deletedFiles = 0;
         if (deleteFiles && item != null && !string.IsNullOrWhiteSpace(item.ContainingFolderPath))
         {
-            deletedFiles = DeleteThemeFiles(item);
+            deletedFiles = await DeleteThemeFilesAsync(item).ConfigureAwait(false);
         }
 
         _logger.LogInformation(
@@ -230,48 +236,89 @@ public class KometaThemesBindingsController : ControllerBase
         plugin.SaveConfiguration();
     }
 
-    private static int DeleteThemeFiles(BaseItem item)
+    /// <summary>
+    /// Deletes the theme files this plugin recorded for an item.
+    /// </summary>
+    /// <remarks>
+    /// This used to enumerate <c>Directory.GetFiles</c> in <c>theme-music/</c> and <c>backdrops/</c>
+    /// and delete everything, with no extension filter and no tracker cross-check. Since
+    /// <c>backdrops/</c> is Jellyfin's artwork folder, unbinding an item with <c>deleteFiles=true</c>
+    /// destroyed the user's fanart along with the themes, and in a flat library it also took every
+    /// other item's themes with it. Deletion is now driven by the tracker, so only files this plugin
+    /// actually wrote for this item are removed.
+    /// </remarks>
+    private async Task<int> DeleteThemeFilesAsync(BaseItem item)
     {
         if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
         {
             return 0;
         }
 
+        var records = await _downloadTracker.LoadAsync(item.ContainingFolderPath).ConfigureAwait(false);
+        var owned = records.Where(r => r.ItemId.Equals(item.Id) || r.ItemId.Equals(Guid.Empty)).ToList();
+
         var deleted = 0;
-        foreach (var directory in new[] { ThemeMusicDirectory, ThemeVideoDirectory })
+        var removedNames = new List<string>();
+
+        foreach (var record in owned)
         {
-            var path = Path.Combine(item.ContainingFolderPath, directory);
-            if (!Directory.Exists(path))
+            var fileName = Path.GetFileName(record.FileName);
+            if (string.IsNullOrWhiteSpace(fileName) || !string.Equals(fileName, record.FileName, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            foreach (var file in Directory.GetFiles(path))
+            var directory = string.IsNullOrWhiteSpace(record.Directory)
+                ? (fileName.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? ThemeVideoDirectory : ThemeMusicDirectory)
+                : record.Directory;
+
+            if (!string.Equals(directory, ThemeMusicDirectory, StringComparison.Ordinal) &&
+                !string.Equals(directory, ThemeVideoDirectory, StringComparison.Ordinal))
             {
-                try
+                continue;
+            }
+
+            var path = Path.Combine(item.ContainingFolderPath, directory, fileName);
+            try
+            {
+                if (System.IO.File.Exists(path))
                 {
-                    System.IO.File.Delete(file);
+                    System.IO.File.Delete(path);
                     deleted++;
+                    removedNames.Add(fileName);
                 }
-                catch
+                else
                 {
-                    // best-effort
+                    removedNames.Add(fileName);
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete theme file {Path}", path);
             }
         }
 
-        var rootTheme = Path.Combine(item.ContainingFolderPath, RootThemeSongFileName);
-        if (System.IO.File.Exists(rootTheme))
+        // The root theme.mp3 is a copy of one of the tracked audio files.
+        if (owned.Any(r => r.FileName.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase)))
         {
+            var rootTheme = Path.Combine(item.ContainingFolderPath, RootThemeSongFileName);
             try
             {
-                System.IO.File.Delete(rootTheme);
-                deleted++;
+                if (System.IO.File.Exists(rootTheme))
+                {
+                    System.IO.File.Delete(rootTheme);
+                    deleted++;
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                // best-effort
+                _logger.LogWarning(ex, "Failed to delete root theme song {Path}", rootTheme);
             }
+        }
+
+        if (removedNames.Count > 0)
+        {
+            await _downloadTracker.RemoveRecordsAsync(item.ContainingFolderPath, removedNames).ConfigureAwait(false);
         }
 
         return deleted;

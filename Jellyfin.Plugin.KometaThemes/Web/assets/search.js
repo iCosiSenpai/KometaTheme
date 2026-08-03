@@ -12,6 +12,7 @@
             finderTarget: 'Target item',
             finderNoItemBody: 'Open the Theme Finder from a series or movie detail page (♪ button).',
             step1: 'Search', step2: 'Pick anime', step3: 'Pick themes',
+            stepAnnounce: 'Step {n} of 3: {name}',
             searchTitle: 'Search animethemes.moe', searchLabel: 'Title', searchYear: 'Year', searchBtn: 'Search',
             searching: 'Searching…', searchEmpty: 'No confident matches. Check the broad results or adjust the title.',
             searchFailed: 'Search failed',
@@ -36,13 +37,37 @@
             bindingRemoved: 'Binding removed',
             saveBindingFailed: 'Failed to save binding',
             filterAudio: 'Audio', filterVideo: 'Video', filterOP: 'OP', filterED: 'ED', filterCreditless: 'Creditless only', filterClear: 'Clear filters', filterAllVisible: 'Select visible',
-            noVisibleThemes: 'No themes match the active filters.'
+            noVisibleThemes: 'No themes match the active filters.',
+            ytTitle: 'Add from a YouTube link',
+            ytNote: 'For openings and endings that animethemes.moe does not have. Paste a YouTube link and you will be asked whether it is an OP or an ED, and whether you want audio, video, or both.',
+            ytUrlLabel: 'YouTube link',
+            ytUrlPlaceholder: 'https://www.youtube.com/watch?v=…',
+            ytUrlHint: 'A watch, youtu.be, Shorts or YouTube Music link. Playlists are ignored — only the linked video is imported.',
+            ytImport: 'Add theme',
+            ytImporting: 'Importing…',
+            ytInvalidUrl: 'That does not look like a YouTube video link.',
+            ytDialogTitle: 'Import this theme',
+            ytTypeLabel: 'Is this an opening or an ending?',
+            ytTypeOP: 'Opening (OP)',
+            ytTypeED: 'Ending (ED)',
+            ytSequenceLabel: 'Number',
+            ytSequenceHint: 'Use 2 for a second opening (OP2), and so on.',
+            ytFormatLabel: 'What should be imported?',
+            ytFormatAudio: 'Audio only',
+            ytFormatVideo: 'Video only',
+            ytFormatBoth: 'Audio and video',
+            ytTitleLabel: 'Theme name (optional)',
+            ytTitleHint: 'Leave empty to use the video title.',
+            ytDone: 'Imported {ok} file(s), {fail} failed',
+            ytDisabled: 'YouTube import is turned off. Enable it in the KometaThemes settings.',
+            ytLongRunning: 'This can take a while: the video is downloaded and then converted.'
         },
         it: {
             finderKicker: 'Theme Finder',
             finderTarget: 'Elemento di destinazione',
             finderNoItemBody: 'Apri il Theme Finder dalla pagina dei dettagli di una serie o un film (pulsante ♪).',
             step1: 'Cerca', step2: 'Scegli anime', step3: 'Scegli temi',
+            stepAnnounce: 'Passo {n} di 3: {name}',
             searchTitle: 'Cerca su animethemes.moe', searchLabel: 'Titolo', searchYear: 'Anno', searchBtn: 'Cerca',
             searching: 'Ricerca in corso…', searchEmpty: 'Nessun match affidabile. Controlla i risultati estesi o modifica il titolo.',
             searchFailed: 'Ricerca fallita',
@@ -67,7 +92,30 @@
             bindingRemoved: 'Binding rimosso',
             saveBindingFailed: 'Salvataggio binding fallito',
             filterAudio: 'Audio', filterVideo: 'Video', filterOP: 'OP', filterED: 'ED', filterCreditless: 'Solo creditless', filterClear: 'Pulisci filtri', filterAllVisible: 'Seleziona visibili',
-            noVisibleThemes: 'Nessun tema corrisponde ai filtri attivi.'
+            noVisibleThemes: 'Nessun tema corrisponde ai filtri attivi.',
+            ytTitle: 'Aggiungi da un link YouTube',
+            ytNote: 'Per le opening e le ending che animethemes.moe non ha. Incolla un link YouTube e ti verrà chiesto se è una OP o una ED, e se vuoi audio, video o entrambi.',
+            ytUrlLabel: 'Link YouTube',
+            ytUrlPlaceholder: 'https://www.youtube.com/watch?v=…',
+            ytUrlHint: 'Un link watch, youtu.be, Shorts o YouTube Music. Le playlist vengono ignorate: viene importato solo il video collegato.',
+            ytImport: 'Aggiungi tema',
+            ytImporting: 'Importazione in corso…',
+            ytInvalidUrl: 'Questo non sembra un link a un video YouTube.',
+            ytDialogTitle: 'Importa questo tema',
+            ytTypeLabel: 'È una opening o una ending?',
+            ytTypeOP: 'Opening (OP)',
+            ytTypeED: 'Ending (ED)',
+            ytSequenceLabel: 'Numero',
+            ytSequenceHint: 'Usa 2 per una seconda opening (OP2) e così via.',
+            ytFormatLabel: 'Cosa importare?',
+            ytFormatAudio: 'Solo audio',
+            ytFormatVideo: 'Solo video',
+            ytFormatBoth: 'Audio e video',
+            ytTitleLabel: 'Nome del tema (opzionale)',
+            ytTitleHint: 'Lascia vuoto per usare il titolo del video.',
+            ytDone: 'Importati {ok} file, {fail} falliti',
+            ytDisabled: 'L\'import da YouTube è disattivato. Attivalo nelle impostazioni di KometaThemes.',
+            ytLongRunning: 'Può richiedere un po\': il video viene scaricato e poi convertito.'
         }
     });
 
@@ -80,6 +128,8 @@
         selectedAnimeId: null,
         selectedAnimeName: null,
         selectedAnimeSlug: null,
+        audioVolume: 50,
+        videoVolume: 50,
         themes: [],
         seasonGroups: [],
         /* selection keyed by media URL (stable + globally unique across anime/seasons),
@@ -87,6 +137,11 @@
         selected: {},
         currentBinding: null,
         downloading: false,
+        life: null,
+        currentStep: 0,
+        youtube: null,
+        ytImporting: false,
+        syncSearchClear: null,
         // Active filters for step 3 (type + creditless)
         filters: { audio: true, video: true, op: true, ed: true, creditless: false },
         // For keyboard nav in results
@@ -102,11 +157,24 @@
     /* ---- stepper ---- */
 
     function setStep(step) {
+        var changed = state.currentStep !== step;
+        state.currentStep = step;
         state.page.querySelectorAll('.kt-step').forEach(function (node) {
             var index = parseInt(node.dataset.step, 10);
             node.classList.toggle('active', index === step);
             node.classList.toggle('done', index < step);
+            // Progress used to be conveyed purely by colour/contrast, invisible to assistive tech.
+            if (index === step) {
+                node.setAttribute('aria-current', 'step');
+            } else {
+                node.removeAttribute('aria-current');
+            }
         });
+
+        if (changed) {
+            var label = state.page.querySelector('.kt-step[data-step="' + step + '"] [data-kt]');
+            KT.a11y.announce(state.page, KT.t('stepAnnounce', { n: step, name: (label && label.textContent) || '' }));
+        }
     }
 
     /* ---- hero / item context ---- */
@@ -547,6 +615,10 @@
             var anime = data.anime || result;
             state.selectedAnimeName = anime.name || result.name || '';
             state.selectedAnimeSlug = anime.slug || result.slug || '';
+            // The endpoint returns the configured levels as 0.0-1.0; the preview helper wants
+            // percentages. Previously nothing populated these, so previews ignored the config.
+            state.audioVolume = typeof data.audioVolume === 'number' ? Math.round(data.audioVolume * 100) : 50;
+            state.videoVolume = typeof data.videoVolume === 'number' ? Math.round(data.videoVolume * 100) : 50;
             renderAnime(anime);
             state.themes = data.themes || [];
             state.seasonGroups = data.seasonGroups || [];
@@ -656,7 +728,10 @@
             previewBtn.type = 'button';
             previewBtn.title = KT.t('preview') + ' ' + KT.t(mediaType);
             previewBtn.addEventListener('click', function () {
-                var vol = (mediaType === 'audio' ? (state.audioVolume || 50) : (state.videoVolume || 50)) / 100;
+                /* These read from state, which never had audioVolume/videoVolume set — preview volume was
+           therefore permanently 0.5 and the configured levels were ignored. The values are
+           populated by selectAnime() from the /themes response. */
+        var vol = (mediaType === 'audio' ? (state.audioVolume || 50) : (state.videoVolume || 50)) / 100;
                 KT.ui.player.toggle(url, mediaType, themeName(theme), vol);
             });
             actions.appendChild(previewBtn);
@@ -685,8 +760,13 @@
         });
         row.appendChild(actions);
 
-        // Basic keyboard support for row: Enter/Space toggles first available media
+        /* Enter/Space on the row itself toggles the first available media.
+           The guard matters: this listener used to fire for keydowns that had bubbled up from
+           the buttons inside the row, preventDefault() cancelled the button's own activation,
+           and the handler then clicked the *first* toggle — so pressing Enter on the ▶ preview
+           button or on the video toggle silently selected the audio track instead. */
         row.addEventListener('keydown', function (ev) {
+            if (ev.target !== row) { return; }
             if (ev.key === 'Enter' || ev.key === ' ') {
                 ev.preventDefault();
                 var firstToggle = actions.querySelector('.kt-media-toggle:not([disabled])');
@@ -1020,11 +1100,24 @@
         btn.textContent = KT.t('downloading');
         logLine(KT.t('downloading'), 'info');
 
+        /* Selections persist across results and seasons, and each entry already carries the
+           anime it came from. Sending the *currently displayed* anime as the top-level identity
+           meant that picking themes from season 1, switching to season 2 and then downloading
+           attributed all of them — and the auto-created binding — to season 2. Only send a
+           top-level anime when every selected theme actually belongs to it. */
+        var animeIds = items.map(function (entry) { return entry.animeId; })
+            .filter(function (id) { return id != null; });
+        var uniqueAnimeIds = animeIds.filter(function (id, index) { return animeIds.indexOf(id) === index; });
+        var singleAnime = uniqueAnimeIds.length === 1 ? uniqueAnimeIds[0] : null;
+        var bindingAnime = singleAnime != null
+            ? items.filter(function (entry) { return entry.animeId === singleAnime; })[0]
+            : null;
+
         KT.api.post('Plugins/KometaThemes/Items/' + encodeURIComponent(state.itemId) + '/download', {
             urls: items,
-            animeId: state.selectedAnimeId,
-            animeName: state.selectedAnimeName || '',
-            animeSlug: state.selectedAnimeSlug || ''
+            animeId: singleAnime,
+            animeName: (bindingAnime && bindingAnime.animeName) || '',
+            animeSlug: (singleAnime != null && singleAnime === state.selectedAnimeId) ? (state.selectedAnimeSlug || '') : ''
         }).then(function (data) {
             var results = (data && data.results) || [];
             var ok = 0;
@@ -1057,6 +1150,210 @@
         });
     }
 
+    /* ---- YouTube import ----
+       For openings and endings animethemes.moe does not carry. The pasted URL deliberately never
+       goes through util.safeUrl or into state.selected: the selection model is keyed by a playable
+       media URL from the trusted host, and YouTube watch pages are neither playable in-page nor on
+       that allow-list. The link is posted straight to the import endpoint, which reduces it to a
+       canonical video id server-side. */
+
+    function loadYouTubeStatus() {
+        var card = q('ktYtCard');
+        var form = q('ktYtForm');
+        var unavailable = q('ktYtUnavailable');
+
+        return KT.api.get('Plugins/KometaThemes/YouTube/status').then(function (status) {
+            state.youtube = status || { enabled: false, available: false };
+            card.style.display = '';
+
+            if (!state.youtube.enabled) {
+                form.style.display = 'none';
+                unavailable.style.display = '';
+                unavailable.className = 'kt-state';
+                util.clear(unavailable);
+                unavailable.appendChild(document.createTextNode(KT.t('ytDisabled')));
+                return;
+            }
+
+            if (!state.youtube.available) {
+                form.style.display = 'none';
+                unavailable.style.display = '';
+                unavailable.className = 'kt-state error';
+                util.clear(unavailable);
+                unavailable.appendChild(document.createTextNode(state.youtube.error || KT.t('error')));
+                return;
+            }
+
+            unavailable.style.display = 'none';
+            form.style.display = '';
+        }).catch(function () {
+            // An older server without this endpoint simply hides the feature.
+            card.style.display = 'none';
+        });
+    }
+
+    /* Client-side pre-check only. The server re-validates and is the authority; this exists so an
+       obvious typo is reported before the dialog opens (KT.ui.confirm cannot stay open on error). */
+    function looksLikeYouTubeLink(value) {
+        var text = String(value || '').trim();
+        if (!text) { return false; }
+        if (/^[A-Za-z0-9_-]{11}$/.test(text)) { return true; }
+        try {
+            var parsed = new URL(text.indexOf('://') === -1 ? 'https://' + text : text);
+            if (parsed.username || parsed.password) { return false; }
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') { return false; }
+            var host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+            return ['youtu.be', 'youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtube-nocookie.com']
+                .indexOf(host) > -1;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function ytField(labelKey, control, hintKey) {
+        var wrap = util.el('div', 'kt-field');
+        var id = control.id;
+        var label = util.el('label', null, KT.t(labelKey));
+        label.htmlFor = id;
+        wrap.appendChild(label);
+        wrap.appendChild(control);
+        if (hintKey) {
+            var hint = util.el('p', 'kt-field-desc', KT.t(hintKey));
+            hint.id = id + '-hint';
+            control.setAttribute('aria-describedby', hint.id);
+            wrap.appendChild(hint);
+        }
+
+        return wrap;
+    }
+
+    function ytSelect(id, options) {
+        var select = util.el('select', 'kt-select');
+        select.id = id;
+        options.forEach(function (option) {
+            var node = util.el('option', null, KT.t(option.labelKey));
+            node.value = option.value;
+            select.appendChild(node);
+        });
+        return select;
+    }
+
+    /* Asks for OP/ED, the sequence number and the format. A <select> rather than a row of
+       aria-pressed toggles: these are mutually exclusive choices, and the existing toggle pattern
+       communicates a multi-select. */
+    function askYouTubeDetails() {
+        var typeSelect = ytSelect('ktYtType', [
+            { value: 'OP', labelKey: 'ytTypeOP' },
+            { value: 'ED', labelKey: 'ytTypeED' }
+        ]);
+
+        var sequenceInput = util.el('input', 'kt-input');
+        sequenceInput.id = 'ktYtSequence';
+        sequenceInput.type = 'number';
+        sequenceInput.min = '1';
+        sequenceInput.max = '99';
+        sequenceInput.step = '1';
+        sequenceInput.value = '1';
+
+        var formatSelect = ytSelect('ktYtFormat', [
+            { value: 'Audio', labelKey: 'ytFormatAudio' },
+            { value: 'Video', labelKey: 'ytFormatVideo' },
+            { value: 'Both', labelKey: 'ytFormatBoth' }
+        ]);
+
+        var titleInput = util.el('input', 'kt-input');
+        titleInput.id = 'ktYtName';
+        titleInput.type = 'text';
+
+        var nodes = [
+            ytField('ytTypeLabel', typeSelect),
+            ytField('ytSequenceLabel', sequenceInput, 'ytSequenceHint'),
+            ytField('ytFormatLabel', formatSelect),
+            ytField('ytTitleLabel', titleInput, 'ytTitleHint'),
+            util.el('p', 'kt-note', KT.t('ytLongRunning'))
+        ];
+
+        return KT.ui.confirm(nodes, KT.t('ytDialogTitle')).then(function (ok) {
+            if (!ok) { return null; }
+            var sequence = parseInt(sequenceInput.value, 10);
+            return {
+                themeType: typeSelect.value,
+                format: formatSelect.value,
+                sequence: (isNaN(sequence) || sequence < 1) ? 1 : Math.min(99, sequence),
+                title: titleInput.value.trim()
+            };
+        });
+    }
+
+    function setYtState(message, type) {
+        var node = q('ktYtState');
+        node.className = 'kt-state' + (type ? ' ' + type : '');
+        util.clear(node);
+        if (!message) { return; }
+        if (type === 'loading') { node.appendChild(util.el('span', 'kt-spinner')); }
+        node.appendChild(document.createTextNode(message));
+    }
+
+    function importFromYouTube() {
+        if (state.ytImporting) { return; }
+        var input = q('ktYtUrl');
+        var url = input.value.trim();
+
+        if (!looksLikeYouTubeLink(url)) {
+            setYtState(KT.t('ytInvalidUrl'), 'error');
+            input.focus();
+            return;
+        }
+
+        setYtState('');
+        askYouTubeDetails().then(function (choice) {
+            if (!choice) { return; }
+
+            state.ytImporting = true;
+            var button = q('ktBtnYtImport');
+            button.disabled = true;
+            button.textContent = KT.t('ytImporting');
+            setYtState(KT.t('ytImporting'), 'loading');
+            KT.a11y.setBusy(q('ktYtCard'), true);
+            logLine(KT.t('ytImporting'), 'info');
+
+            return KT.api.post('Plugins/KometaThemes/Items/' + encodeURIComponent(state.itemId) + '/youtube', {
+                url: url,
+                themeType: choice.themeType,
+                format: choice.format,
+                sequence: choice.sequence,
+                title: choice.title
+            }).then(function (data) {
+                var results = (data && data.results) || [];
+                var ok = 0;
+                var fail = 0;
+                results.forEach(function (result) {
+                    if (result.success) {
+                        ok++;
+                        logLine('✓ ' + (result.fileName || result.mediaType), 'success');
+                    } else {
+                        fail++;
+                        logLine('✗ ' + result.mediaType + (result.error ? ' — ' + result.error : ''), 'error');
+                    }
+                });
+
+                setYtState(KT.t('ytDone', { ok: ok, fail: fail }), fail ? 'error' : 'success');
+                KT.ui.toast(KT.t('ytDone', { ok: ok, fail: fail }), fail ? 'error' : 'success', 5000);
+                if (ok > 0) { input.value = ''; }
+            }).catch(function (error) {
+                var message = (error && error.message) || KT.t('error');
+                setYtState(message, 'error');
+                logLine('✗ ' + message, 'error');
+                KT.ui.toast(message, 'error');
+            }).finally(function () {
+                state.ytImporting = false;
+                button.disabled = false;
+                button.textContent = KT.t('ytImport');
+                KT.a11y.setBusy(q('ktYtCard'), false);
+            });
+        });
+    }
+
     /* ---- entry point ---- */
 
     function show(page) {
@@ -1076,6 +1373,7 @@
             q('ktBtnSearch').textContent = KT.t('searchBtn');
             q('ktBtnDownload').textContent = KT.t('download');
             q('ktBtnSaveBinding').textContent = KT.t('saveBinding');
+            q('ktBtnYtImport').textContent = KT.t('ytImport');
             var bulkLabels = { 'op-audio': 'bulkOpAudio', 'ed-audio': 'bulkEdAudio', video: 'bulkVideo', clear: 'bulkClear' };
             page.querySelectorAll('[data-bulk]').forEach(function (btn) {
                 btn.textContent = KT.t(bulkLabels[btn.dataset.bulk]);
@@ -1084,17 +1382,22 @@
             var hasItem = !!state.itemId;
             q('ktFinderNoItem').style.display = hasItem ? 'none' : '';
             q('ktFinderWorkspace').style.display = hasItem ? '' : 'none';
+            if (!hasItem) { q('ktYtCard').style.display = 'none'; }
 
             if (!page.dataset.ktBound) {
                 page.dataset.ktBound = '1';
-                KT.ui.attachSyncDot(q('ktLiveDot'));
+                state.life = KT.ui.lifecycle(page);
+                state.life.add(KT.ui.attachSyncDot(q('ktLiveDot')));
                 q('ktBtnSearch').addEventListener('click', runSearch);
                 q('ktSearchInput').addEventListener('keydown', function (event) {
-                    if (event.key === 'Enter') { event.preventDefault(); runSearch(); }
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        if (!q('ktBtnSearch').disabled) { runSearch(); }
+                    }
                     if (event.key === 'Escape') {
+                        event.stopPropagation();
                         q('ktSearchInput').value = '';
-                        var clr = q('ktSearchClear');
-                        if (clr) clr.style.display = 'none';
+                        if (state.syncSearchClear) { state.syncSearchClear(); }
                     }
                 });
                 // clear (x) button for search input (polished UX + a11y)
@@ -1114,15 +1417,22 @@
                         inputWrap.style.position = 'relative';
                     }
                     inputWrap.appendChild(clr);
-                    si.addEventListener('input', function () {
+                    // Visibility was driven only by the input event, so a value set
+                    // programmatically (loadItemContext) left the button hidden.
+                    state.syncSearchClear = function () {
                         clr.style.display = si.value ? '' : 'none';
-                    });
-                    clr.style.display = 'none';
+                    };
+                    si.addEventListener('input', state.syncSearchClear);
+                    state.syncSearchClear();
                 }
                 // keyboard nav for results (attach once; containers persist across re-renders)
                 setupResultsKeyboard();
                 setupBroadKeyboard();
                 q('ktBtnDownload').addEventListener('click', download);
+                q('ktBtnYtImport').addEventListener('click', importFromYouTube);
+                q('ktYtUrl').addEventListener('keydown', function (event) {
+                    if (event.key === 'Enter') { event.preventDefault(); importFromYouTube(); }
+                });
                 q('ktBtnSaveBinding').addEventListener('click', saveBindingOnly);
                 page.querySelectorAll('[data-bulk]').forEach(function (btn) {
                     btn.addEventListener('click', function () { bulkSelect(btn.dataset.bulk); });
@@ -1147,9 +1457,21 @@
                 clearDetail();
                 setStep(1);
                 loadItemContext();
+                q('ktYtUrl').value = '';
+                setYtState('');
+                loadYouTubeStatus();
             } else if (hasItem && !state.itemInfo) {
                 loadItemContext();
+                loadYouTubeStatus();
+            } else if (hasItem && !state.youtube) {
+                loadYouTubeStatus();
             }
+        }).catch(function (error) {
+            // Terminal handler: without it a failure inside the chain above became an unhandled
+            // rejection and the page silently stayed on its loading skeleton.
+            try {
+                KT.ui.toast((error && error.message) || KT.t('error'), 'error');
+            } catch (e) { /* toast host unavailable */ }
         });
     }
 

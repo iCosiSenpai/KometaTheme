@@ -21,6 +21,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets the test project exercise internal pure helpers (scoring, parsing) directly
+         instead of reaching for them through reflection. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Jellyfin.Plugin.KometaThemes.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Polly" Version="8.6.5" />
     <PackageReference Include="System.Threading.RateLimiting" Version="9.0.0" />
     <PackageReference Include="SerilogAnalyzer" Version="0.15.0" PrivateAssets="All" />

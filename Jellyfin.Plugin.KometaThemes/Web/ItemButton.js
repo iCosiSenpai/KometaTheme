@@ -7,8 +7,10 @@
     var PAGE_NAME = 'KometaThemesSearch';
     var MENU_PAGE = 'KometaThemesItem'; // the main-menu drawer entry (Plugin.GetPages)
     var DRAWER_STYLE_ID = 'kometathemes-drawer-style';
-    var ASSET_VERSION = '1.0.8.0';
+    var ASSET_VERSION = '1.1.0.0';
     var ICON_URL = 'configurationpage?name=KometaThemesLogoSvg&v=' + ASSET_VERSION;
+    var FALLBACK_INTERVAL_MS = 10000;
+    var MAX_CACHE_ENTRIES = 500;
 
     if (window[STATE_KEY] && typeof window[STATE_KEY].destroy === 'function') {
         window[STATE_KEY].destroy();
@@ -266,18 +268,26 @@
             }
         }
 
+        // Fast path: the button is already in place for this item, so there is nothing to do and —
+        // crucially — no request to make. Without this, every observer tick and every fallback tick
+        // re-ran an uncached /eligible fetch, so simply sitting on a detail page issued tens of
+        // authenticated requests per minute per open tab, indefinitely.
+        var existing = document.getElementById(BTN_ID);
+        if (existing && existing.dataset.itemId === itemId && existing.isConnected) {
+            return;
+        }
+
         var cached = state.itemTypeCache[itemId];
         if (cached === 'unsupported') {
             return;
         }
 
         if (cached === 'supported') {
-            // The Theme Finder APIs require elevation — admins only. The admin
-            // promise is memoized, so this resolves instantly after first check.
-            Promise.all([isAdmin(), fetchEligible(itemId)]).then(function (results) {
-                var admin = results[0];
-                var eligibility = results[1] || { eligible: true };
-                if (admin && eligibility.eligible && isDetailPage()) {
+            // Eligibility was resolved and cached with the item type; it is per-item static data,
+            // so re-asking on every tick was pure overhead. The admin promise is memoized too, so
+            // this resolves without touching the network.
+            isAdmin().then(function (admin) {
+                if (admin && isDetailPage() && getItemId() === itemId) {
                     injectButton(itemId);
                 }
             });
@@ -300,6 +310,14 @@
 
             var isSupported = isSupportedItemType(item) && eligibility.eligible;
             if (item) {
+                // Bound the cache: a long dashboard session can visit a lot of items.
+                var keys = Object.keys(state.itemTypeCache);
+                if (keys.length > MAX_CACHE_ENTRIES) {
+                    for (var k = 0; k < keys.length - MAX_CACHE_ENTRIES; k++) {
+                        delete state.itemTypeCache[keys[k]];
+                    }
+                }
+
                 // Only cache real lookups; network failures stay uncached so
                 // the next tick retries. Admin is evaluated per attempt — a
                 // transient auth failure must not poison the type cache.
@@ -367,8 +385,10 @@
             return;
         }
 
+        // Any mutation anywhere in the app schedules a check. That is acceptable only because
+        // ensureButton() is now a no-op (no DOM writes, no network) once the button is in place.
         state.observer = new MutationObserver(function () {
-            scheduleEnsure(160);
+            scheduleEnsure(250);
         });
         state.observer.observe(document.body, { childList: true, subtree: true });
 
@@ -376,9 +396,11 @@
         addWindowListener('popstate', handleNavigation);
         addWindowListener('pageshow', function () { scheduleEnsure(60); });
 
+        // Safety net for renders the observer misses. 1.5s was far too aggressive for what is only
+        // a fallback; the observer plus the navigation events carry the normal case.
         state.fallbackInterval = setInterval(function () {
             ensureButton();
-        }, 1500);
+        }, FALLBACK_INTERVAL_MS);
 
         ensureButton();
     }
@@ -394,7 +416,11 @@
         });
         state.listeners = [];
         state.pending = null;
+        state.itemTypeCache = {};
         removeButton();
+
+        var style = document.getElementById(DRAWER_STYLE_ID);
+        if (style) style.remove();
     }
 
     startObserver();

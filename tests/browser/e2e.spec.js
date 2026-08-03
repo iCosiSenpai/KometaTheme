@@ -70,6 +70,83 @@ test('item page renders the selected item and remains re-entrant', async ({ page
 
 
 
+test('YouTube import asks for OP/ED and format, then posts the link', async ({ page }) => {
+  const errors = await installJellyfinMocks(page);
+
+  const posted = [];
+  await page.route('**/Plugins/KometaThemes/Items/*/youtube', async route => {
+    posted.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        title: 'Tank!',
+        videoId: 'dQw4w9WgXcQ',
+        results: [
+          { mediaType: 'audio', fileName: 'OP2 - Tank!__50.mp3', success: true, skipped: false },
+          { mediaType: 'video', fileName: 'OP2 - Tank!__50.webm', success: true, skipped: false }
+        ]
+      })
+    });
+  });
+
+  await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
+
+  // The card is only shown once the availability probe reports the extractor is usable.
+  await expect(page.locator('#ktYtCard')).toBeVisible();
+  await expect(page.locator('#ktYtForm')).toBeVisible();
+
+  const url = page.locator('#ktYtUrl');
+  await url.fill('not a youtube link');
+  await page.getByRole('button', { name: 'Add theme' }).click();
+  await expect(page.locator('#ktYtState')).toContainText('does not look like a YouTube video link');
+  expect(posted).toHaveLength(0);
+
+  await url.fill('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  await page.getByRole('button', { name: 'Add theme' }).click();
+
+  // The OP/ED + format dialog must appear before anything is sent.
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Is this an opening or an ending?');
+  await expect(dialog).toContainText('What should be imported?');
+  expect(posted).toHaveLength(0);
+
+  await page.locator('#ktYtType').selectOption('ED');
+  await page.locator('#ktYtSequence').fill('2');
+  await page.locator('#ktYtFormat').selectOption('Both');
+  await page.locator('#ktYtName').fill('Tank!');
+  await dialog.getByRole('button', { name: 'Confirm' }).click();
+
+  await expect(page.locator('#ktYtState')).toContainText('Imported 2 file(s), 0 failed');
+  expect(posted).toEqual([{
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    themeType: 'ED',
+    format: 'Both',
+    sequence: 2,
+    title: 'Tank!'
+  }]);
+
+  // A successful import clears the field so the next link starts clean.
+  await expect(url).toHaveValue('');
+  expect(errors).toEqual([]);
+});
+
+test('YouTube import card explains itself when the extractor is missing', async ({ page }) => {
+  const errors = await installJellyfinMocks(page);
+  await page.route('**/Plugins/KometaThemes/YouTube/status', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ enabled: true, available: false, executablePath: '', error: 'yt-dlp was not found.' })
+  }));
+
+  await openPluginPage(page, 'KometaThemesSearch', 'KometaThemesSearchPage', 'test-item');
+
+  await expect(page.locator('#ktYtUnavailable')).toContainText('yt-dlp was not found.');
+  await expect(page.locator('#ktYtForm')).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
 test('page shell reports a visible error when the bootstrap loader fails', async ({ page }) => {
   await page.route('**/configurationpage?name=KometaThemesLoaderJs*', route =>
     route.fulfill({ status: 404, contentType: 'text/plain', body: 'missing loader' }));

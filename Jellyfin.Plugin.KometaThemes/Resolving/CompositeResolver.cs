@@ -74,10 +74,28 @@ public class CompositeResolver : IAnimeResolver
 
         // Manual bindings take precedence over automatic resolution.
         // Normalize keys so D/GUID-N formats and casing differences all match.
-        var manualBindings = config.ManualBindings.ToDictionary(
-            b => NormalizeId(b.ItemId),
-            b => b,
-            StringComparer.OrdinalIgnoreCase);
+        // Built by hand rather than with ToDictionary: NormalizeId collapses the GUID "D" and "N"
+        // formats and casing onto one key, while the write side de-duplicates with plain string
+        // equality — so two bindings for the same item stored in different formats both survive in
+        // the config and produced a duplicate key here, throwing before a single item resolved.
+        // Last entry wins, matching the upsert semantics the controllers intend.
+        var manualBindings = new Dictionary<string, ManualBindingEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var binding in config.ManualBindings)
+        {
+            var key = NormalizeId(binding.ItemId);
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            if (manualBindings.ContainsKey(key))
+            {
+                _logger.LogWarning("Duplicate manual binding for item {ItemId}; using the most recent entry", binding.ItemId);
+            }
+
+            manualBindings[key] = binding;
+        }
+
         foreach (var item in eligible)
         {
             if (manualBindings.TryGetValue(NormalizeId(item.Id.ToString()), out var binding))

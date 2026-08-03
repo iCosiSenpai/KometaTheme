@@ -33,6 +33,17 @@ public class AnimeThemesDownloader : IDisposable
     private const string ThemeMusicDirectory = "theme-music";
     private const string ThemeVideoDirectory = "backdrops";
 
+    /// <summary>
+    /// Suffix for in-progress encoder output. Never left behind on a successful run, and always
+    /// removed on a failed one, so a partial file can never be mistaken for a finished theme.
+    /// </summary>
+    private const string PartialSuffix = ".kt-part";
+
+    /// <summary>
+    /// Budget for a video re-encode, which is CPU-bound and far slower than a stream copy.
+    /// </summary>
+    private const int ReencodeTimeoutSeconds = 1800;
+
     private readonly HttpClient _client;
     private readonly IAnimeResolver _resolver;
     private readonly ILogger<AnimeThemesDownloader> _logger;
@@ -42,7 +53,20 @@ public class AnimeThemesDownloader : IDisposable
     private readonly DownloadTracker _downloadTracker;
     private readonly Sync.DownloadMetrics _metrics;
     private readonly ThemeLinkRepairService _linkRepair;
-    private SemaphoreSlim _downloadSemaphore = new(2, 2);
+    private readonly object _downloadGateLock = new();
+
+    /// <remarks>
+    /// CA2213 is suppressed deliberately. This gate is intentionally never disposed: overlapping
+    /// syncs may still hold permits on it (including across a parallelism change, which swaps the
+    /// instance), and a <see cref="SemaphoreSlim"/> whose <c>AvailableWaitHandle</c> was never
+    /// accessed owns no unmanaged resources, so the GC can reclaim it safely. Disposing it is what
+    /// caused the <c>ObjectDisposedException</c>/<c>SemaphoreFullException</c> bug this replaced.
+    /// </remarks>
+#pragma warning disable CA2213
+    private SemaphoreSlim _downloadGate = new(2, 2);
+#pragma warning restore CA2213
+    private int _downloadGateDegree = 2;
+    private bool _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AnimeThemesDownloader"/> class.
@@ -70,13 +94,38 @@ public class AnimeThemesDownloader : IDisposable
     }
 
     /// <summary>
-    /// Recreates the download semaphore with the configured parallelism level.
+    /// Returns the download gate sized to the configured parallelism, rebuilding it only when
+    /// the configured degree actually changed.
     /// </summary>
-    private void UpdateSemaphore(int degree)
+    /// <remarks>
+    /// This type is a DI singleton and syncs can overlap (scheduled run, per-item library-event
+    /// sync and the Theme Finder all reach it), so the previous implementation — disposing and
+    /// replacing the field on every <see cref="HandleAsync"/> — could throw
+    /// <see cref="ObjectDisposedException"/> at an in-flight <c>WaitAsync</c>, or release a permit
+    /// on a different instance than the one it waited on. The old instance is deliberately not
+    /// disposed: callers may still hold permits on it, and a <see cref="SemaphoreSlim"/> whose
+    /// <c>AvailableWaitHandle</c> was never touched owns no unmanaged resources, so letting the
+    /// GC reclaim it is safe. Callers must capture the returned reference once and use that same
+    /// reference for both the wait and the release.
+    /// </remarks>
+    private SemaphoreSlim GetDownloadGate(int degree)
     {
-        var newDegree = Math.Clamp(degree, 1, 8);
-        _downloadSemaphore.Dispose();
-        _downloadSemaphore = new SemaphoreSlim(newDegree, newDegree);
+        var target = Math.Clamp(degree, 1, 8);
+        if (Volatile.Read(ref _downloadGateDegree) == target)
+        {
+            return _downloadGate;
+        }
+
+        lock (_downloadGateLock)
+        {
+            if (_downloadGateDegree != target)
+            {
+                _downloadGate = new SemaphoreSlim(target, target);
+                _downloadGateDegree = target;
+            }
+
+            return _downloadGate;
+        }
     }
 
     /// <summary>
@@ -105,33 +154,31 @@ public class AnimeThemesDownloader : IDisposable
 
     /// <summary>
     /// Processes an item, downloading themes for all applicable seasons.
-    /// Returns true if any changes were made.
     /// </summary>
-    public async ValueTask<bool> HandleAsync(BaseItem item, Anime anime, PluginConfiguration configuration, CancellationToken cancellationToken, bool? forceOverride = null)
+    /// <returns>A summary of how many theme files were downloaded, failed and skipped.</returns>
+    public async ValueTask<ThemeSyncResult> HandleAsync(BaseItem item, Anime anime, PluginConfiguration configuration, CancellationToken cancellationToken, bool? forceOverride = null)
     {
         _logger.LogInformation("[{Id}] Processing themes for: {Name} (AnimeId={AniId})", item.Id, item.Name, anime.Id);
-
-        UpdateSemaphore(configuration.DegreeOfParallelism);
 
         var appliedConfiguration = ApplyFallbackMode(item, configuration);
         bool force = forceOverride ?? appliedConfiguration.ForceSync;
 
         var isMovie = item.GetBaseItemKind() == BaseItemKind.Movie;
 
-        var results = new List<bool>();
+        var result = default(ThemeSyncResult);
 
         if (isMovie)
         {
             var settings = appliedConfiguration.MovieSettings;
-            results.Add(await ProcessMediaType(MediaType.Video, anime, item, force, settings, null, cancellationToken).ConfigureAwait(false));
-            results.Add(await ProcessMediaType(MediaType.Audio, anime, item, force, settings, null, cancellationToken).ConfigureAwait(false));
+            result += await ProcessMediaType(MediaType.Video, anime, item, force, settings, null, appliedConfiguration, cancellationToken).ConfigureAwait(false);
+            result += await ProcessMediaType(MediaType.Audio, anime, item, force, settings, null, appliedConfiguration, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            results.AddRange(await ProcessSeasons(anime, item, appliedConfiguration, cancellationToken, force).ConfigureAwait(false));
+            result = await ProcessSeasons(anime, item, appliedConfiguration, cancellationToken, force).ConfigureAwait(false);
         }
 
-        if (results.Any(r => r) || force)
+        if (result.ChangesMade || force)
         {
             _logger.LogInformation("[{Id}] Saving metadata after theme changes with full refresh", item.Id);
             CopyBestThemeToRoot(item);
@@ -149,16 +196,20 @@ public class AnimeThemesDownloader : IDisposable
             {
                 await _linkRepair.RepairAsync(item, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[{Id}] Theme link repair failed", item.Id);
             }
 
-            return results.Any(r => r);
+            return result;
         }
 
         _logger.LogInformation("[{Id}] Finished without changes", item.Id);
-        return false;
+        return result;
     }
 
     /// <summary>
@@ -200,9 +251,9 @@ public class AnimeThemesDownloader : IDisposable
         }
     }
 
-    private async Task<List<bool>> ProcessSeasons(Anime anime, BaseItem item, PluginConfiguration configuration, CancellationToken cancellationToken, bool? forceOverride = null)
+    private async Task<ThemeSyncResult> ProcessSeasons(Anime anime, BaseItem item, PluginConfiguration configuration, CancellationToken cancellationToken, bool? forceOverride = null)
     {
-        var results = new List<bool>();
+        var result = default(ThemeSyncResult);
         var seasonNumber = _seasonDetector.DetectSeason(item, configuration.SeasonDetectionMode);
         bool force = forceOverride ?? configuration.ForceSync;
 
@@ -215,8 +266,15 @@ public class AnimeThemesDownloader : IDisposable
             _logger.LogInformation("[{Id}] Processing Series item: {Name} (DetectedSeason={S})", item.Id, item.Name, seasonNumber);
         }
 
-        results.Add(await ProcessMediaType(MediaType.Video, anime, item, force, new CollectionTypeConfiguration { AudioSettings = configuration.AudioSettings, VideoSettings = configuration.VideoSettings, MaxThemesPerSeason = configuration.MaxThemesPerSeason }, seasonNumber, cancellationToken).ConfigureAwait(false));
-        results.Add(await ProcessMediaType(MediaType.Audio, anime, item, force, new CollectionTypeConfiguration { AudioSettings = configuration.AudioSettings, VideoSettings = configuration.VideoSettings, MaxThemesPerSeason = configuration.MaxThemesPerSeason }, seasonNumber, cancellationToken).ConfigureAwait(false));
+        CollectionTypeConfiguration BuildSettings() => new()
+        {
+            AudioSettings = configuration.AudioSettings,
+            VideoSettings = configuration.VideoSettings,
+            MaxThemesPerSeason = configuration.MaxThemesPerSeason
+        };
+
+        result += await ProcessMediaType(MediaType.Video, anime, item, force, BuildSettings(), seasonNumber, configuration, cancellationToken).ConfigureAwait(false);
+        result += await ProcessMediaType(MediaType.Audio, anime, item, force, BuildSettings(), seasonNumber, configuration, cancellationToken).ConfigureAwait(false);
 
         if (item is Series series)
         {
@@ -227,29 +285,30 @@ public class AnimeThemesDownloader : IDisposable
                 foreach (var childSeason in childSeasons)
                 {
                     var childSeasonNumber = _seasonDetector.DetectSeason(childSeason, configuration.SeasonDetectionMode);
-                    results.Add(await ProcessMediaType(MediaType.Video, anime, childSeason, force, new CollectionTypeConfiguration { AudioSettings = configuration.AudioSettings, VideoSettings = configuration.VideoSettings, MaxThemesPerSeason = configuration.MaxThemesPerSeason }, childSeasonNumber, cancellationToken).ConfigureAwait(false));
-                    results.Add(await ProcessMediaType(MediaType.Audio, anime, childSeason, force, new CollectionTypeConfiguration { AudioSettings = configuration.AudioSettings, VideoSettings = configuration.VideoSettings, MaxThemesPerSeason = configuration.MaxThemesPerSeason }, childSeasonNumber, cancellationToken).ConfigureAwait(false));
+                    result += await ProcessMediaType(MediaType.Video, anime, childSeason, force, BuildSettings(), childSeasonNumber, configuration, cancellationToken).ConfigureAwait(false);
+                    result += await ProcessMediaType(MediaType.Audio, anime, childSeason, force, BuildSettings(), childSeasonNumber, configuration, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
 
-        return results;
+        return result;
     }
 
-    private async ValueTask<bool> ProcessMediaType(
+    private async ValueTask<ThemeSyncResult> ProcessMediaType(
         MediaType type,
         Anime anime,
         BaseItem item,
         bool forceSync,
         CollectionTypeConfiguration configuration,
         int? seasonNumber,
+        PluginConfiguration pluginConfiguration,
         CancellationToken cancellationToken = default)
     {
         var settings = type == MediaType.Audio ? configuration.AudioSettings : configuration.VideoSettings;
 
         if (settings.FetchType == FetchType.None)
         {
-            return false;
+            return default;
         }
 
         var allThemes = GetBestThemes(anime, settings).DistinctBy(it => it.Theme.Id).ToList();
@@ -286,43 +345,59 @@ public class AnimeThemesDownloader : IDisposable
                 RemoveFile(item, link.Filepath);
             }
 
-            CleanDirectory(item, type, links.Select(it => Path.GetFileName(it.Filepath)));
+            await CleanDirectoryAsync(item, type, links.Select(it => Path.GetFileName(it.Filepath)), cancellationToken).ConfigureAwait(false);
         }
         else
         {
             await PruneOrphanedFilesAsync(item, type, links.Select(it => Path.GetFileName(it.Filepath)), cancellationToken).ConfigureAwait(false);
         }
 
-        bool changesMade = false;
+        var downloaded = 0;
+        var failed = 0;
+        var skipped = 0;
 
         if (links.Length > 1)
         {
+            // Capture the gate once: it must be the same instance for the wait and the release.
+            var gate = GetDownloadGate(pluginConfiguration.DegreeOfParallelism);
             var tasks = links.Select(async link =>
             {
-                await _downloadSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    if (await Download(type, link.Url, item, link.Filepath, settings.Volume, link.Theme, seasonNumber, cancellationToken).ConfigureAwait(false))
-                    {
-                        Interlocked.Exchange(ref changesMade, true);
-                    }
+                    return await Download(type, link.Url, item, link.Filepath, settings.Volume, link.Theme, seasonNumber, cancellationToken).ConfigureAwait(false);
                 }
                 finally
                 {
-                    _downloadSemaphore.Release();
+                    gate.Release();
                 }
             });
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+
+            var outcomes = await Task.WhenAll(tasks).ConfigureAwait(false);
+            foreach (var outcome in outcomes)
+            {
+                switch (outcome)
+                {
+                    case DownloadOutcome.Downloaded: downloaded++; break;
+                    case DownloadOutcome.Failed: failed++; break;
+                    default: skipped++; break;
+                }
+            }
         }
         else
         {
             foreach (var link in links)
             {
-                changesMade |= await Download(type, link.Url, item, link.Filepath, settings.Volume, link.Theme, seasonNumber, cancellationToken).ConfigureAwait(false);
+                switch (await Download(type, link.Url, item, link.Filepath, settings.Volume, link.Theme, seasonNumber, cancellationToken).ConfigureAwait(false))
+                {
+                    case DownloadOutcome.Downloaded: downloaded++; break;
+                    case DownloadOutcome.Failed: failed++; break;
+                    default: skipped++; break;
+                }
             }
         }
 
-        return changesMade;
+        return new ThemeSyncResult(downloaded, failed, skipped);
     }
 
     private List<FlattenedTheme> PickThemes(FetchType fetchType, List<FlattenedTheme> themes, int? maxThemes = null)
@@ -436,51 +511,23 @@ public class AnimeThemesDownloader : IDisposable
         }
     }
 
-    private void CleanDirectory(BaseItem series, MediaType mediaType, IEnumerable<string> allowedNames)
-    {
-        if (string.IsNullOrWhiteSpace(series.ContainingFolderPath))
-        {
-            _logger.LogDebug("[{Id}] Cannot clean directory for item with null path: {Name}", series.Id, series.Name);
-            return;
-        }
-
-        var directory = mediaType == MediaType.Audio ? ThemeMusicDirectory : ThemeVideoDirectory;
-        var searchPattern = mediaType == MediaType.Audio ? "*.mp3" : "*.webm";
-
-        var path = Path.Combine(series.ContainingFolderPath, directory);
-        if (!Directory.Exists(path))
-        {
-            return;
-        }
-
-        var allowedNamesSet = allowedNames.ToHashSet();
-        var removed = new List<string>();
-
-        foreach (var filepath in Directory.GetFiles(path, searchPattern))
-        {
-            var name = Path.GetFileName(filepath);
-            if (!allowedNamesSet.Contains(name))
-            {
-                _logger.LogInformation("[{Id}] Removing obsolete theme: {Theme}", series.Id, filepath);
-                try
-                {
-                    File.Delete(filepath);
-                    removed.Add(name);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[{Id}] Failed to delete obsolete theme {Path}", series.Id, filepath);
-                }
-            }
-        }
-
-        if (removed.Count > 0)
-        {
-            _ = _downloadTracker.RemoveRecordsAsync(series.ContainingFolderPath, removed);
-        }
-    }
+    /// <summary>
+    /// Removes theme files this plugin previously wrote that are no longer wanted.
+    /// </summary>
+    /// <remarks>
+    /// This used to delete every <c>*.mp3</c>/<c>*.webm</c> in the theme folder that was not part of
+    /// the current run, with no tracker check — so a force sync destroyed hand-placed theme files and
+    /// anything the Theme Finder had downloaded under a different name. It now applies the same rule
+    /// the non-force path already used: only touch files the tracker says we created, and never touch
+    /// imported themes, which by definition can never appear in a sync's expected-name set.
+    /// </remarks>
+    private async Task CleanDirectoryAsync(BaseItem item, MediaType mediaType, IEnumerable<string> allowedNames, CancellationToken cancellationToken)
+        => await RemoveUnwantedThemeFilesAsync(item, mediaType, allowedNames, cancellationToken).ConfigureAwait(false);
 
     private async Task PruneOrphanedFilesAsync(BaseItem item, MediaType mediaType, IEnumerable<string> allowedNames, CancellationToken cancellationToken)
+        => await RemoveUnwantedThemeFilesAsync(item, mediaType, allowedNames, cancellationToken).ConfigureAwait(false);
+
+    private async Task RemoveUnwantedThemeFilesAsync(BaseItem item, MediaType mediaType, IEnumerable<string> allowedNames, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
         {
@@ -497,8 +544,15 @@ public class AnimeThemesDownloader : IDisposable
             return;
         }
 
-        var existing = (await _downloadTracker.LoadAsync(item.ContainingFolderPath).ConfigureAwait(false))
-            .ToDictionary(r => r.FileName, StringComparer.OrdinalIgnoreCase);
+        var tracked = new Dictionary<string, DownloadRecord>(StringComparer.OrdinalIgnoreCase);
+        foreach (var record in await _downloadTracker.LoadAsync(item.ContainingFolderPath).ConfigureAwait(false))
+        {
+            if (!string.IsNullOrEmpty(record.FileName))
+            {
+                tracked[record.FileName] = record;
+            }
+        }
+
         var allowedSet = allowedNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var removed = new List<string>();
 
@@ -510,12 +564,20 @@ public class AnimeThemesDownloader : IDisposable
                 continue;
             }
 
-            // Only prune files that the tracker knows about — never delete files we did not create.
-            if (!existing.ContainsKey(name))
+            // Only prune files the tracker knows about — never delete files we did not create.
+            if (!tracked.TryGetValue(name, out var record))
             {
                 continue;
             }
 
+            // Imported themes are not part of any sync's expected set, so they would look like
+            // orphans forever. Leave them alone; the user removes them explicitly.
+            if (record.Source != ThemeSource.AnimeThemes)
+            {
+                continue;
+            }
+
+            _logger.LogInformation("[{Id}] Removing obsolete theme: {Theme}", item.Id, filepath);
             try
             {
                 File.Delete(filepath);
@@ -523,7 +585,7 @@ public class AnimeThemesDownloader : IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[{Id}] Failed to prune orphan theme {Path}", item.Id, filepath);
+                _logger.LogWarning(ex, "[{Id}] Failed to delete obsolete theme {Path}", item.Id, filepath);
             }
         }
 
@@ -534,9 +596,9 @@ public class AnimeThemesDownloader : IDisposable
     }
 
     /// <summary>
-    /// Downloads a single theme file. Public entry point for manual theme picker.
+    /// Downloads a single theme file. Public entry point for the manual theme picker.
     /// </summary>
-    public ValueTask<bool> DownloadSingle(
+    public ValueTask<DownloadOutcome> DownloadSingle(
         MediaType type,
         string url,
         BaseItem item,
@@ -545,7 +607,74 @@ public class AnimeThemesDownloader : IDisposable
         CancellationToken cancellationToken = default)
         => Download(type, url, item, relativePath, volume, null, null, cancellationToken);
 
-    private async ValueTask<bool> Download(
+    /// <summary>
+    /// Transcodes an already-downloaded local media file into a theme file for an item.
+    /// Used by sources that need an external extractor (YouTube) rather than a direct CDN link.
+    /// </summary>
+    /// <param name="type">Audio or video theme.</param>
+    /// <param name="sourceFile">Path to the local source media file.</param>
+    /// <param name="item">The owning library item.</param>
+    /// <param name="relativePath">Theme path relative to the item folder.</param>
+    /// <param name="volume">Volume to bake into the output, 0.0-1.0.</param>
+    /// <param name="record">Optional tracker record to persist on success.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The download outcome.</returns>
+    public async ValueTask<DownloadOutcome> ImportLocalFileAsync(
+        MediaType type,
+        string sourceFile,
+        BaseItem item,
+        string relativePath,
+        double volume,
+        DownloadRecord? record,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
+        {
+            return DownloadOutcome.Failed;
+        }
+
+        var path = Path.Combine(item.ContainingFolderPath, relativePath);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            try
+            {
+                await TranscodeToTargetAsync(type, sourceFile, path, volume, item, copyVideoStream: true, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConversionException) when (type == MediaType.Video)
+            {
+                // A stream copy only works when the source video codec is one the webm container
+                // accepts. An imported source can be H.264/mp4, which ffmpeg refuses to copy into
+                // webm, so fall back to a real encode rather than failing the import.
+                _logger.LogInformation("[{Id}] Stream copy rejected for the imported video; re-encoding instead", item.Id);
+                await TranscodeToTargetAsync(type, sourceFile, path, volume, item, copyVideoStream: false, cancellationToken).ConfigureAwait(false);
+            }
+
+            RemoveLegacyMutedVideoForTarget(type, path, volume, item);
+
+            if (record != null)
+            {
+                record.FileName = Path.GetFileName(relativePath);
+                await SafeAddTrackerRecordAsync(item, record, path).ConfigureAwait(false);
+            }
+
+            _metrics.RecordSuccess();
+            return DownloadOutcome.Downloaded;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[{Id}] Import of local file into {Path} failed", item.Id, path);
+            _metrics.RecordFailure();
+            return DownloadOutcome.Failed;
+        }
+    }
+
+    private async ValueTask<DownloadOutcome> Download(
         MediaType type,
         string url,
         BaseItem item,
@@ -558,15 +687,15 @@ public class AnimeThemesDownloader : IDisposable
         if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
         {
             _logger.LogDebug("[{Id}] Cannot download for item with null path: {Name}", item.Id, item.Name);
-            return false;
+            return DownloadOutcome.Failed;
         }
 
         var path = Path.Combine(item.ContainingFolderPath, relativePath);
-        if (File.Exists(path))
+        if (IsUsableExistingTarget(path, item))
         {
             RemoveLegacyMutedVideoForTarget(type, path, volume, item);
             _metrics.RecordSkipped();
-            return false;
+            return DownloadOutcome.Skipped;
         }
 
         var tempFile = Path.GetTempFileName();
@@ -575,11 +704,86 @@ public class AnimeThemesDownloader : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             _logger.LogInformation("[{Id}] Downloading {Url} to {Path}", item.Id, url, path);
-            using var downloadStream = await _client.GetStreamAsync(url, cancellationToken).ConfigureAwait(false);
-            using var fileStream = File.OpenWrite(tempFile);
-            await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            using (var downloadStream = await _client.GetStreamAsync(url, cancellationToken).ConfigureAwait(false))
+            using (var fileStream = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                await downloadStream.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
+            }
 
-            var process = new Process
+            await TranscodeToTargetAsync(type, tempFile, path, volume, item, copyVideoStream: true, cancellationToken).ConfigureAwait(false);
+
+            _logger.LogInformation("[{Id}] Successfully downloaded theme!", item.Id);
+            RemoveLegacyMutedVideoForTarget(type, path, volume, item);
+
+            if (theme != null)
+            {
+                await SafeAddTrackerRecordAsync(
+                    item,
+                    new DownloadRecord
+                    {
+                        ThemeId = theme.Theme.Id,
+                        Type = theme.Theme.Type,
+                        Sequence = theme.Theme.Sequence ?? 0,
+                        Slug = theme.Theme.Slug ?? string.Empty,
+                        FileName = Path.GetFileName(relativePath),
+                        SeasonNumber = seasonNumber ?? 0,
+                        DownloadedAt = DateTime.UtcNow,
+                        ItemId = item.Id,
+                        Source = ThemeSource.AnimeThemes,
+                        Directory = type == MediaType.Audio ? ThemeMusicDirectory : ThemeVideoDirectory
+                    },
+                    path).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is not a download failure: do not count it, do not blame the item.
+            // Rethrow so the caller stops instead of grinding through the remaining links.
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "[{Id}] Download of {Url} failed", item.Id, url);
+            _metrics.RecordFailure();
+            return DownloadOutcome.Failed;
+        }
+        finally
+        {
+            TryDeleteFile(tempFile);
+        }
+
+        _metrics.RecordSuccess();
+        return DownloadOutcome.Downloaded;
+    }
+
+    /// <summary>
+    /// Runs ffmpeg over <paramref name="sourceFile"/> and publishes the result at
+    /// <paramref name="targetPath"/> atomically.
+    /// </summary>
+    /// <remarks>
+    /// ffmpeg used to be pointed straight at the final path. Any failure after it had created and
+    /// begun filling that file — non-zero exit, the kill-on-timeout branch, cancellation, a full
+    /// disk — left a truncated file behind, and only the temporary *input* was cleaned up. On the
+    /// next sync the <c>File.Exists</c> short-circuit saw that stub, counted it as skipped and
+    /// reported the item satisfied, so the broken theme was never repaired by any subsequent sync,
+    /// force sync or prune. Encoding into a sibling <c>.kt-part</c> file and moving it into place
+    /// only after a verified non-empty exit means a failed attempt leaves no trace.
+    /// </remarks>
+    private async Task TranscodeToTargetAsync(
+        MediaType type,
+        string sourceFile,
+        string targetPath,
+        double volume,
+        BaseItem item,
+        bool copyVideoStream,
+        CancellationToken cancellationToken)
+    {
+        var partialPath = targetPath + PartialSuffix;
+        TryDeleteFile(partialPath);
+
+        try
+        {
+            using var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
@@ -590,7 +794,7 @@ public class AnimeThemesDownloader : IDisposable
                     FileName = _mediaEncoder.EncoderPath,
                     WindowStyle = ProcessWindowStyle.Hidden,
                     ErrorDialog = false,
-                    ArgumentList = { "-i", tempFile }
+                    ArgumentList = { "-nostdin", "-y", "-i", sourceFile }
                 },
                 EnableRaisingEvents = true
             };
@@ -598,8 +802,28 @@ public class AnimeThemesDownloader : IDisposable
             var arguments = process.StartInfo.ArgumentList;
             if (type == MediaType.Video)
             {
-                arguments.Add("-c:v");
-                arguments.Add("copy");
+                if (copyVideoStream)
+                {
+                    arguments.Add("-c:v");
+                    arguments.Add("copy");
+                }
+                else
+                {
+                    // VP9 so the result is a valid webm. "good" with a row-based thread split keeps
+                    // a short theme clip within a sane wall time on a NAS-class CPU.
+                    arguments.Add("-c:v");
+                    arguments.Add("libvpx-vp9");
+                    arguments.Add("-crf");
+                    arguments.Add("33");
+                    arguments.Add("-b:v");
+                    arguments.Add("0");
+                    arguments.Add("-deadline");
+                    arguments.Add("good");
+                    arguments.Add("-cpu-used");
+                    arguments.Add("4");
+                    arguments.Add("-row-mt");
+                    arguments.Add("1");
+                }
             }
 
             if (volume < 0.01 && type == MediaType.Video)
@@ -612,99 +836,132 @@ public class AnimeThemesDownloader : IDisposable
                 arguments.Add(string.Create(CultureInfo.InvariantCulture, $"volume={volume:0.00}"));
             }
 
-            arguments.Add(path);
+            // ffmpeg picks the muxer from the extension, so keep the real one and only
+            // append the partial marker after it.
+            arguments.Add("-f");
+            arguments.Add(type == MediaType.Audio ? "mp3" : "webm");
+            arguments.Add(partialPath);
 
             process.Start();
 
+            // A stream copy is I/O-bound and finishes in seconds, so the configured timeout is the
+            // right budget. A re-encode is CPU-bound and can take many minutes for a theme-length
+            // clip on NAS-class hardware, which would otherwise be killed as a spurious timeout.
+            var timeoutSeconds = copyVideoStream || type == MediaType.Audio
+                ? Math.Clamp(Plugin.Instance?.Configuration?.DownloadTimeoutSeconds ?? 60, 15, 300)
+                : ReencodeTimeoutSeconds;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+            // Drain both pipes: an unread stdout can fill its buffer and deadlock ffmpeg
+            // until the timeout kills it.
+            var outputRead = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var errorRead = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
             try
             {
-                var errorRead = process.StandardError.ReadToEndAsync(cancellationToken);
-                var exitWait = process.WaitForExitAsync(cancellationToken);
-
-                // ffmpeg timeout from plugin configuration
-                var timeoutSeconds = Math.Clamp(Plugin.Instance?.Configuration?.DownloadTimeoutSeconds ?? 60, 15, 300);
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-                var completedTask = await Task.WhenAny(exitWait, Task.Delay(Timeout.Infinite, linkedCts.Token)).ConfigureAwait(false);
-                if (completedTask != exitWait)
-                {
-                    _logger.LogWarning("[{Id}] ffmpeg timed out, killing process", item.Id);
-                    process.Kill(entireProcessTree: true);
-                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                    throw new ConversionException(0, $"ffmpeg timed out after {timeoutSeconds}s");
-                }
-
-                var error = await errorRead.ConfigureAwait(false);
-
-                if (process.ExitCode != 0)
-                {
-                    var commandInfo = $"Command line: {process.StartInfo.FileName} {string.Join(" ", arguments)}";
-                    throw new ConversionException(process.ExitCode, commandInfo + "\n" + error);
-                }
+                await process.WaitForExitAsync(linkedCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 if (!process.HasExited)
                 {
-                    _logger.LogWarning("[{Id}] ffmpeg cancelled, killing process", item.Id);
-                    process.Kill(entireProcessTree: true);
+                    var reason = timeoutCts.IsCancellationRequested ? "timed out" : "was cancelled";
+                    _logger.LogWarning("[{Id}] ffmpeg {Reason}, killing process", item.Id, reason);
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception killEx)
+                    {
+                        _logger.LogWarning(killEx, "[{Id}] Failed to kill ffmpeg", item.Id);
+                    }
+
                     await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+
+                await Task.WhenAll(outputRead, errorRead).ConfigureAwait(false);
+
+                if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new ConversionException(
+                        process.ExitCode,
+                        string.Create(CultureInfo.InvariantCulture, $"ffmpeg timed out after {timeoutSeconds}s"));
                 }
 
                 throw;
             }
 
-            _logger.LogInformation("[{Id}] Successfully downloaded theme!", item.Id);
-            RemoveLegacyMutedVideoForTarget(type, path, volume, item);
+            await Task.WhenAll(outputRead, errorRead).ConfigureAwait(false);
 
-            if (theme != null && !string.IsNullOrWhiteSpace(item.ContainingFolderPath))
+            if (process.ExitCode != 0)
             {
-                try
-                {
-                    await _downloadTracker.AddRecordAsync(
-                        item.ContainingFolderPath,
-                        new DownloadRecord
-                        {
-                            ThemeId = theme.Theme.Id,
-                            Type = theme.Theme.Type,
-                            Sequence = theme.Theme.Sequence ?? 0,
-                            Slug = theme.Theme.Slug ?? string.Empty,
-                            FileName = Path.GetFileName(relativePath),
-                            SeasonNumber = seasonNumber ?? 0,
-                            DownloadedAt = DateTime.UtcNow,
-                            ItemId = item.Id
-                        }).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "[{Id}] Failed to record download tracker entry for {Path}", item.Id, path);
-                }
+                var commandInfo = $"Command line: {process.StartInfo.FileName} {string.Join(" ", arguments)}";
+                throw new ConversionException(process.ExitCode, commandInfo + "\n" + await errorRead.ConfigureAwait(false));
             }
+
+            var info = new FileInfo(partialPath);
+            if (!info.Exists || info.Length == 0)
+            {
+                throw new ConversionException(0, "ffmpeg reported success but produced no output.");
+            }
+
+            File.Move(partialPath, targetPath, overwrite: true);
         }
-        catch (Exception e)
+        catch
         {
-            _logger.LogError(e, "Download failed");
-            _metrics.RecordFailure();
+            TryDeleteFile(partialPath);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Treats a zero-byte target as absent so themes broken by an earlier interrupted
+    /// transcode are re-downloaded instead of being skipped forever.
+    /// </summary>
+    private bool IsUsableExistingTarget(string path, BaseItem item)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
             return false;
         }
-        finally
+
+        if (info.Length > 0)
         {
-            try
-            {
-                if (File.Exists(tempFile))
-                {
-                    File.Delete(tempFile);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to delete temp file {Path}", tempFile);
-            }
+            return true;
         }
 
-        _metrics.RecordSuccess();
-        return true;
+        _logger.LogWarning("[{Id}] Existing theme {Path} is empty — replacing it", item.Id, path);
+        TryDeleteFile(path);
+        return false;
+    }
+
+    private async Task SafeAddTrackerRecordAsync(BaseItem item, DownloadRecord record, string path)
+    {
+        try
+        {
+            await _downloadTracker.AddRecordAsync(item.ContainingFolderPath, record).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[{Id}] Failed to record download tracker entry for {Path}", item.Id, path);
+        }
+    }
+
+    private void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete file {Path}", path);
+        }
     }
 
     private bool IsSatisfied(BaseItem item, PluginConfiguration configuration)
@@ -993,10 +1250,18 @@ public class AnimeThemesDownloader : IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !_disposed)
         {
+            _disposed = true;
+
+            // The HttpClient comes from IHttpClientFactory, which owns the underlying handler;
+            // disposing the client here is a no-op for the connection pool but keeps the
+            // ownership story explicit.
             _client.Dispose();
-            _downloadSemaphore.Dispose();
+
+            // _downloadGate is deliberately not disposed: downloads may still hold permits on it
+            // during shutdown, and a SemaphoreSlim whose AvailableWaitHandle was never touched
+            // holds no unmanaged resources.
         }
     }
 

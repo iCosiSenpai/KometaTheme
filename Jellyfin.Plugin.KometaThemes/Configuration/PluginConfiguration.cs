@@ -206,6 +206,19 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool VideoVolumeDefaultMigrated { get; set; }
 
     /// <summary>
+    /// Gets or sets the full path to the <c>yt-dlp</c> executable used for YouTube theme imports.
+    /// Leave empty to auto-detect it from the usual install locations and <c>PATH</c>.
+    /// </summary>
+    public string? YtDlpPath { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether importing themes from YouTube links is allowed.
+    /// Disabled by default: it needs an external <c>yt-dlp</c> binary, and downloading from
+    /// YouTube may not be permitted in every jurisdiction or for every video.
+    /// </summary>
+    public bool EnableYouTubeImport { get; set; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether the new item auto-sync is enabled.
     /// </summary>
     public bool AutoSyncOnItemAdded { get; set; } = true;
@@ -250,7 +263,19 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <returns>Dictionary keyed by item ID.</returns>
     public Dictionary<string, SkippedItemEntry> GetSkippedItemsDictionary()
     {
-        return SkippedItems.ToDictionary(i => i.ItemId, i => i);
+        // Built by hand: ToDictionary throws on a duplicate ItemId, and nothing guarantees these
+        // lists are unique — the controllers de-duplicate with plain string equality, so the same
+        // item stored under two GUID formats appears twice.
+        var result = new Dictionary<string, SkippedItemEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in SkippedItems)
+        {
+            if (!string.IsNullOrEmpty(entry.ItemId))
+            {
+                result[entry.ItemId] = entry;
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -259,7 +284,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <returns>Dictionary keyed by item ID.</returns>
     public Dictionary<string, ManualBindingEntry> GetManualBindingsDictionary()
     {
-        return ManualBindings.ToDictionary(i => i.ItemId, i => i);
+        var result = new Dictionary<string, ManualBindingEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in ManualBindings)
+        {
+            if (!string.IsNullOrEmpty(entry.ItemId))
+            {
+                result[entry.ItemId] = entry;
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -279,12 +313,18 @@ public class PluginConfiguration : BasePluginConfiguration
         // Degree of parallelism 1-8
         DegreeOfParallelism = Math.Clamp(DegreeOfParallelism, 1, 8);
 
-        // Rate limit 1-300 req/min (generous upper for CDN)
-        RateLimitPerMinute = Math.Clamp(RateLimitPerMinute, 1, 300);
+        // Rate limit: the same 1-90 window the HTTP handler enforces. This used to allow up to 300,
+        // so the dashboard advertised rates the handler then silently capped.
+        RateLimitPerMinute = Math.Clamp(
+            RateLimitPerMinute,
+            Http.RateLimitingHandler.MinRatePerMinute,
+            Http.RateLimitingHandler.MaxRatePerMinute);
 
-        // TTLs reasonable bounds
-        PositiveCacheTtlDays = Math.Clamp(PositiveCacheTtlDays, 0, 365);
-        NegativeCacheTtlHours = Math.Clamp(NegativeCacheTtlHours, 0, 24 * 30);
+        // TTLs: the floor is 1, not 0. A zero TTL made every cache lookup expire on read, which
+        // evicted the entry, marked the cache dirty and reserialized the whole file every 30s while
+        // never producing a single hit.
+        PositiveCacheTtlDays = Math.Clamp(PositiveCacheTtlDays, 1, 365);
+        NegativeCacheTtlHours = Math.Clamp(NegativeCacheTtlHours, 1, 24 * 30);
 
         // Title threshold 0.5 - 1.0
         TitleMatchThreshold = Math.Clamp(TitleMatchThreshold, 0.5, 1.0);

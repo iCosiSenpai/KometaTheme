@@ -111,7 +111,7 @@ public sealed class FailedItemsStore : IDisposable
                 };
             }
 
-            _dirty = true;
+            Volatile.Write(ref _dirty, true);
         }
         finally
         {
@@ -148,7 +148,7 @@ public sealed class FailedItemsStore : IDisposable
         {
             if (_entries.Remove(key))
             {
-                _dirty = true;
+                Volatile.Write(ref _dirty, true);
                 return true;
             }
 
@@ -179,7 +179,7 @@ public sealed class FailedItemsStore : IDisposable
             if (_entries.TryGetValue(key, out var entry) && entry.Reason == FailedItemReason.Unresolved)
             {
                 _entries.Remove(key);
-                _dirty = true;
+                Volatile.Write(ref _dirty, true);
             }
         }
         finally
@@ -220,7 +220,7 @@ public sealed class FailedItemsStore : IDisposable
             if (count > 0)
             {
                 _entries.Clear();
-                _dirty = true;
+                Volatile.Write(ref _dirty, true);
             }
 
             return count;
@@ -275,7 +275,25 @@ public sealed class FailedItemsStore : IDisposable
             }
 
             var json = File.ReadAllText(_storePath);
-            var entries = JsonSerializer.Deserialize<List<FailedItemEntry>>(json);
+            List<FailedItemEntry>? entries;
+            try
+            {
+                entries = JsonSerializer.Deserialize<List<FailedItemEntry>>(json);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "Failed items store at {Path} is corrupt; quarantining it", _storePath);
+                try
+                {
+                    File.Move(_storePath, _storePath + ".corrupt", overwrite: true);
+                }
+                catch (Exception moveEx)
+                {
+                    _logger.LogWarning(moveEx, "Failed to quarantine corrupt failed items store");
+                }
+
+                entries = null;
+            }
 
             _entries.Clear();
             if (entries != null)
@@ -316,7 +334,9 @@ public sealed class FailedItemsStore : IDisposable
 
     private async Task FlushToDiskAsync()
     {
-        if (!_dirty)
+        // Volatile: writers set _dirty under the semaphore, but this pre-check runs outside it,
+        // so a plain read could observe a stale false and skip the flush entirely.
+        if (!Volatile.Read(ref _dirty))
         {
             return;
         }
@@ -324,14 +344,20 @@ public sealed class FailedItemsStore : IDisposable
         await _semaphore.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (!_dirty)
+            if (!Volatile.Read(ref _dirty))
             {
                 return;
             }
 
             var json = JsonSerializer.Serialize(_entries.Values.ToList(), _jsonOptions);
-            await File.WriteAllTextAsync(_storePath, json).ConfigureAwait(false);
-            _dirty = false;
+
+            // Temp file plus rename: WriteAllTextAsync truncates the target before streaming into
+            // it, so a crash mid-flush left unparseable JSON that was then silently loaded as an
+            // empty store, erasing the entire Unresolved list.
+            var tempPath = _storePath + ".tmp";
+            await File.WriteAllTextAsync(tempPath, json).ConfigureAwait(false);
+            File.Move(tempPath, _storePath, overwrite: true);
+            Volatile.Write(ref _dirty, false);
             _logger.LogDebug("Flushed {Count} failed item entries to disk", _entries.Count);
         }
         catch (Exception ex)

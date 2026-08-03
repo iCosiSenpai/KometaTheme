@@ -81,6 +81,20 @@ public sealed class AniListMetadataClient
 
         response.EnsureSuccessStatusCode();
         var payload = await response.Content.ReadFromJsonAsync<AniListGraphQlResponse>(cancellationToken).ConfigureAwait(false);
+
+        // GraphQL reports failures as HTTP 200 with an errors array, so a malformed query, an unknown
+        // id or an in-body rate limit all used to surface as a silent null with nothing logged.
+        if (payload?.Errors is { Count: > 0 })
+        {
+            _logger.LogDebug(
+                "AniList returned {Count} GraphQL error(s) for {Field}={Id}: {Message}",
+                payload.Errors.Count,
+                idField,
+                id,
+                payload.Errors[0].Message);
+            return null;
+        }
+
         return payload?.Data?.Media;
     }
 
@@ -89,7 +103,11 @@ public sealed class AniListMetadataClient
         [property: JsonPropertyName("variables")] IReadOnlyDictionary<string, int> Variables);
 
     private sealed record AniListGraphQlResponse(
-        [property: JsonPropertyName("data")] AniListGraphQlData? Data);
+        [property: JsonPropertyName("data")] AniListGraphQlData? Data,
+        [property: JsonPropertyName("errors")] IReadOnlyList<AniListGraphQlError>? Errors);
+
+    private sealed record AniListGraphQlError(
+        [property: JsonPropertyName("message")] string? Message);
 
     private sealed record AniListGraphQlData(
         [property: JsonPropertyName("Media")] AniListMedia? Media);

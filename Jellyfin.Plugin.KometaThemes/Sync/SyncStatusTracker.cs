@@ -1,5 +1,4 @@
 using System;
-using System.Threading;
 
 namespace Jellyfin.Plugin.KometaThemes.Sync;
 
@@ -29,7 +28,29 @@ public sealed class SyncStatusTracker
     /// <param name="totalItems">Total candidate item count.</param>
     public void Start(int totalItems)
     {
-        Update("scan", totalItems, 0, 0, 0, 0, null, false);
+        Update("scan", totalItems, 0, 0, 0, 0, 0, null, false);
+    }
+
+    /// <summary>
+    /// Marks the current session as finished without success, so the UI does not keep showing a
+    /// stale in-progress snapshot.
+    /// </summary>
+    /// <param name="phase">Terminal phase name, e.g. <c>cancelled</c> or <c>failed</c>.</param>
+    /// <param name="message">Display message.</param>
+    public void Finish(string phase, string message)
+    {
+        lock (_gate)
+        {
+            var previous = _status;
+            _status = previous with
+            {
+                Phase = phase,
+                Message = message,
+                ProgressPercent = 100,
+                UpdatedUtc = DateTime.UtcNow,
+                IsFinished = true
+            };
+        }
     }
 
     /// <summary>
@@ -41,6 +62,7 @@ public sealed class SyncStatusTracker
     /// <param name="resolvedItems">Resolved item count.</param>
     /// <param name="downloadedItems">Downloaded item count.</param>
     /// <param name="skippedItems">Skipped item count.</param>
+    /// <param name="failedItems">Failed item count.</param>
     /// <param name="message">Optional display message.</param>
     /// <param name="isFinished">Whether the sync is finished.</param>
     public void Update(
@@ -50,6 +72,7 @@ public sealed class SyncStatusTracker
         int resolvedItems,
         int downloadedItems,
         int skippedItems,
+        int failedItems = 0,
         string? message = null,
         bool isFinished = false)
     {
@@ -62,19 +85,27 @@ public sealed class SyncStatusTracker
                 resolvedItems,
                 downloadedItems,
                 skippedItems,
-                CalculateProgress(phase, totalItems, processedItems, resolvedItems, downloadedItems, isFinished),
+                failedItems,
+                CalculateProgress(phase, totalItems, processedItems, resolvedItems, isFinished),
                 message ?? string.Empty,
                 DateTime.UtcNow,
                 isFinished);
         }
     }
 
+    /// <summary>
+    /// Maps the current phase onto an overall percentage.
+    /// </summary>
+    /// <remarks>
+    /// The download phase is driven by <paramref name="processedItems"/> rather than by the number of
+    /// items that actually downloaded something. Keying it off downloads made the bar stall at 70%
+    /// for any run where most items were already satisfied, because nothing incremented.
+    /// </remarks>
     private static double CalculateProgress(
         string phase,
         int totalItems,
         int processedItems,
         int resolvedItems,
-        int downloadedItems,
         bool isFinished)
     {
         if (isFinished)
@@ -87,16 +118,17 @@ public sealed class SyncStatusTracker
             return 0;
         }
 
-        var scanBase = phase switch
+        var progress = phase switch
         {
             "scan" => 5,
             "filter" => 10,
             "resolve" => 10 + (resolvedItems * 60.0 / totalItems),
-            "download" => 70 + (downloadedItems * 30.0 / Math.Max(1, Math.Max(resolvedItems, processedItems))),
+            "download" => 70 + (processedItems * 30.0 / totalItems),
             "failed" => 100,
+            "cancelled" => 100,
             _ => processedItems * 100.0 / totalItems
         };
 
-        return Math.Round(Math.Min(99, Math.Max(0, scanBase)), 1);
+        return Math.Round(Math.Min(99, Math.Max(0, progress)), 1);
     }
 }

@@ -63,6 +63,14 @@
             skippedSearch: 'Filter by name…', skippedEmpty: 'No excluded items.',
             restore: 'Restore', restored: 'Item restored',
             colName: 'Name', colType: 'Type', colYear: 'Year', colReason: 'Reason', colWhen: 'When', colActions: '',
+            ytTitle: 'YouTube import',
+            ytNote: 'Lets you add openings and endings that animethemes.moe does not have, by pasting a YouTube link in the Theme Finder. Needs the yt-dlp program installed in the Jellyfin environment.',
+            ytEnable: 'Allow importing themes from YouTube links',
+            ytEnableDesc: 'Off by default. Check the terms of use and the copyright rules that apply where you are before enabling this.',
+            ytPath: 'yt-dlp path',
+            ytPathDesc: 'Leave empty to detect it automatically from the usual locations and PATH.',
+            ytFound: 'yt-dlp found: {path}',
+            ytMissing: 'yt-dlp was not found. Install it in the Jellyfin environment, or set its full path above.',
             playlistTitle: 'Themes playlist',
             playlistNote: 'Builds an M3U playlist containing every theme you have downloaded. Refresh rebuilds it; Export M3U saves it to a file.',
             enablePlaylist: 'Maintain a global themes playlist',
@@ -95,6 +103,7 @@
             bindingRemoved: 'Binding removed',
             bindingUnlocked: 'Binding unlocked — next sync will use automatic resolution',
             confirmRemoveBinding: 'Remove the manual binding for "{name}"?',
+            confirmUnlockBinding: 'Unlock "{name}" so the next sync re-matches it automatically? Downloaded files are kept.',
             confirmRemoveBindingDelete: 'Also delete downloaded theme files',
             logServer: 'Server', logSession: 'Session', logRefresh: 'Refresh',
             logEmpty: 'No plugin entries in the current server log.',
@@ -155,6 +164,14 @@
             skippedSearch: 'Filtra per nome…', skippedEmpty: 'Nessun elemento escluso.',
             restore: 'Ripristina', restored: 'Elemento ripristinato',
             colName: 'Nome', colType: 'Tipo', colYear: 'Anno', colReason: 'Motivo', colWhen: 'Quando', colActions: '',
+            ytTitle: 'Import da YouTube',
+            ytNote: 'Permette di aggiungere opening ed ending che animethemes.moe non ha, incollando un link YouTube nel Theme Finder. Richiede il programma yt-dlp installato nell\'ambiente di Jellyfin.',
+            ytEnable: 'Consenti l\'import dei temi da link YouTube',
+            ytEnableDesc: 'Disattivato per impostazione predefinita. Prima di attivarlo verifica i termini di utilizzo e le regole sul diritto d\'autore applicabili nel tuo paese.',
+            ytPath: 'Percorso di yt-dlp',
+            ytPathDesc: 'Lascia vuoto per rilevarlo automaticamente dalle posizioni consuete e da PATH.',
+            ytFound: 'yt-dlp trovato: {path}',
+            ytMissing: 'yt-dlp non trovato. Installalo nell\'ambiente di Jellyfin, oppure indica sopra il percorso completo.',
             playlistTitle: 'Playlist dei temi',
             playlistNote: 'Crea una playlist M3U con tutti i temi che hai scaricato. Refresh la rigenera; Export M3U la salva come file.',
             enablePlaylist: 'Mantieni una playlist globale dei temi',
@@ -187,6 +204,7 @@
             bindingRemoved: 'Binding rimosso',
             bindingUnlocked: 'Binding sbloccato — il prossimo sync userà la risoluzione automatica',
             confirmRemoveBinding: 'Rimuovere il binding manuale per "{name}"?',
+            confirmUnlockBinding: 'Sbloccare "{name}" perché il prossimo sync lo riassoci automaticamente? I file già scaricati vengono mantenuti.',
             confirmRemoveBindingDelete: 'Cancella anche i file dei temi scaricati',
             logServer: 'Server', logSession: 'Sessione', logRefresh: 'Aggiorna',
             logEmpty: 'Nessuna riga del plugin nel log server corrente.',
@@ -254,6 +272,8 @@
         failed: [],
         bindings: [],
         poller: null,
+        life: null,
+        syncStarting: false,
         saving: false,
         logTab: 'server',
         logFetchedAt: 0
@@ -384,6 +404,32 @@
         panel.appendChild(hint);
     }
 
+    /* Reports whether the external extractor was actually found, so an enabled-but-missing
+       yt-dlp is visible here instead of only failing at import time. */
+    function ytStatusRow() {
+        var row = util.el('div', 'kt-state');
+        row.id = 'ktYtDlpStatus';
+        row.setAttribute('role', 'status');
+        row.appendChild(document.createTextNode(KT.t('loading')));
+
+        KT.api.get('Plugins/KometaThemes/YouTube/status').then(function (status) {
+            util.clear(row);
+            if (status && status.available) {
+                row.className = 'kt-state success';
+                row.appendChild(document.createTextNode(KT.t('ytFound', { path: status.executablePath })));
+            } else {
+                row.className = 'kt-state error';
+                row.appendChild(document.createTextNode((status && status.error) || KT.t('ytMissing')));
+            }
+        }).catch(function () {
+            util.clear(row);
+            row.className = 'kt-state';
+            row.appendChild(document.createTextNode(KT.t('ytMissing')));
+        });
+
+        return row;
+    }
+
     function buildThemesPanel(panel) {
         var groups = [
             mediaGroup('seriesAudio', 'AudioSettings'),
@@ -423,6 +469,12 @@
             renderField({ path: 'ForceSync', type: 'check', label: 'forceSyncOpt' }),
             renderField({ path: 'DryRunMode', type: 'check', label: 'dryRun', desc: 'dryRunDesc' })
         ]));
+
+        panel.appendChild(card('ytTitle', [
+            renderField({ path: 'EnableYouTubeImport', type: 'check', label: 'ytEnable', desc: 'ytEnableDesc' }),
+            renderField({ path: 'YtDlpPath', type: 'text', label: 'ytPath', desc: 'ytPathDesc' }),
+            ytStatusRow()
+        ], 'ytNote'));
 
         var playlistActions = util.el('div', 'kt-row');
         var btnRefresh = util.el('button', 'kt-btn', KT.t('refreshPlaylist'));
@@ -696,7 +748,7 @@
             var unlock = util.el('button', 'kt-btn kt-btn-sm kt-btn-ghost', KT.t('unlockBinding'));
             unlock.type = 'button';
             unlock.addEventListener('click', function () {
-                KT.ui.confirm(KT.t('confirmRemoveBinding', { name: item.itemName || item.itemId })).then(function (ok) {
+                KT.ui.confirm(KT.t('confirmUnlockBinding', { name: item.itemName || item.itemId })).then(function (ok) {
                     if (!ok) { return; }
                     KT.api.post('Plugins/KometaThemes/Bindings/' + encodeURIComponent(item.itemId) + '/unlock').then(function () {
                         KT.ui.toast(KT.t('bindingUnlocked'), 'success');
@@ -725,7 +777,7 @@
                     if (!ok) { return; }
                     var deleteFiles = deleteCheckbox.checked;
                     KT.api.del('Plugins/KometaThemes/Bindings/' + encodeURIComponent(item.itemId) + '?deleteFiles=' + deleteFiles).then(function () {
-                        KT.ui.toast(KT.t('bindingRemoved'), deleteFiles ? 'success' : 'success');
+                        KT.ui.toast(KT.t('bindingRemoved'), 'success');
                         loadBindings();
                     }).catch(function (error) { KT.ui.toast(error.message || KT.t('error'), 'error'); });
                 });
@@ -795,6 +847,8 @@
         });
     }
 
+    /* Debounced: this snapshots every field and JSON.stringifies the result, which ran on each
+       individual `input` event. */
     function updateDirty() {
         var dirty = state.loadedSnapshot !== snapshot();
         q('ktSaveBar').style.display = dirty ? '' : 'none';
@@ -1024,32 +1078,36 @@
     }
 
     function triggerSync(force) {
+        if (state.syncStarting) { return; }
         var confirmKey = force ? 'confirmForceSync' : 'confirmSyncNow';
         KT.ui.confirm(KT.t(confirmKey)).then(function (ok) {
             if (!ok) { return; }
-            if (force) {
-                // Server-side forced run: avoids the ForceSync config race condition
-                // and guarantees existing themes are re-downloaded/overwritten.
-                KT.api.post('Plugins/KometaThemes/Sync/force').then(function () {
-                    log(KT.t('syncRunning'), 'info');
-                    showSyncProgress();
-                }).catch(function (error) {
-                    log(error.message || KT.t('syncStartFailed'), 'error');
-                    KT.ui.toast(error.message || KT.t('syncStartFailed'), 'error');
-                });
-                return;
-            }
 
-            // Normal "Sync now": always incremental (ignores the persistent ForceSync checkbox).
-            // This makes the two buttons have clearly different behavior.
-            KT.api.post('Plugins/KometaThemes/Sync/sync').then(function () {
+            // These two buttons had no disabled state, so repeated clicks fired repeated
+            // start requests at the server.
+            state.syncStarting = true;
+            var buttons = [q('ktBtnSyncNow'), q('ktBtnForceSync')].filter(Boolean);
+            buttons.forEach(function (button) { button.disabled = true; });
+
+            var route = force ? 'Plugins/KometaThemes/Sync/force' : 'Plugins/KometaThemes/Sync/sync';
+            KT.api.post(route).then(function () {
                 log(KT.t('syncRunning'), 'info');
                 showSyncProgress();
             }).catch(function (error) {
                 log(error.message || KT.t('syncStartFailed'), 'error');
                 KT.ui.toast(error.message || KT.t('syncStartFailed'), 'error');
+            }).finally(function () {
+                state.syncStarting = false;
+                buttons.forEach(function (button) { button.disabled = false; });
             });
         });
+    }
+
+    /* Cancellable hide, registered with the page lifecycle: the bare setTimeout kept a handle on
+       a node that may belong to a page the user already left. */
+    function hideProgressLater(progress) {
+        var hide = function () { progress.style.display = 'none'; };
+        if (state.life) { state.life.timeout(hide, 6000); } else { setTimeout(hide, 6000); }
     }
 
     function showSyncProgress(onFinished) {
@@ -1064,7 +1122,7 @@
                 if (onFinished) { onFinished(); }
                 loadHero();
                 loadFailed();
-                setTimeout(function () { progress.style.display = 'none'; }, 6000);
+                hideProgressLater(progress);
             }
         });
         state.poller.start();
@@ -1171,7 +1229,13 @@
                 renderUiText();
                 bindTabs();
                 bindCacheTile();
-                KT.ui.attachSyncDot(q('ktLiveDot'));
+                state.life = KT.ui.lifecycle(page);
+                // Discarding these handles left the 15s status poll and the 2s progress poll
+                // running for the rest of the dashboard session.
+                state.life.add(KT.ui.attachSyncDot(q('ktLiveDot')));
+                state.life.add(function () {
+                    if (state.poller) { state.poller.stop(); state.poller = null; }
+                });
                 q('ktBtnSave').addEventListener('click', save);
                 q('ktBtnDiscard').addEventListener('click', applyConfigToForm);
                 q('ktBtnSyncNow').addEventListener('click', function () { triggerSync(false); });

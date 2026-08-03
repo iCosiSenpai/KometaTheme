@@ -46,8 +46,20 @@ public class KometaThemesSyncController : ControllerBase
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Accepted status, or conflict if another sync is running.</returns>
     [HttpPost("run")]
-    public IActionResult Run([FromBody] SyncRunRequest request, CancellationToken cancellationToken)
+    public IActionResult Run([FromBody] SyncRunRequest? request, CancellationToken cancellationToken)
     {
+        if (request == null)
+        {
+            return BadRequest(new { error = "A preset is required." });
+        }
+
+        // Any integer deserializes into an enum field, so an out-of-range value would otherwise
+        // reach the runner and fall through its preset switch unnoticed.
+        if (!Enum.IsDefined(request.Preset))
+        {
+            return BadRequest(new { error = "Unknown preset." });
+        }
+
         if (!_runner.TryStartPresetRun(request.Preset))
         {
             return Conflict(new { error = "A KometaThemes sync is already running." });

@@ -53,6 +53,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Theme link repair (Jellyfin 10.11.x ThemeMediaResolver workaround)
         serviceCollection.AddSingleton<ThemeLinkRepairService>();
 
+        // YouTube theme import (external yt-dlp extractor)
+        serviceCollection.AddSingleton<YouTube.YouTubeImportService>();
+
         // Library event handler for real-time sync on new items
         serviceCollection.AddSingleton<ItemRemovedHandler>();
         serviceCollection.AddSingleton<LibrarySyncHandler>();
@@ -77,12 +80,16 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             .AddHttpMessageHandler<RateLimitingHandler>()
             .AddHttpMessageHandler<PollyResilienceHandler>();
 
-        // CDN client for actual theme downloads (no rate limiting needed, but resilience is)
+        // CDN client for actual theme downloads (no rate limiting needed, but resilience is).
+        // HttpClient.Timeout covers the streamed body read, not just the response headers, so the
+        // previous 30s value aborted any theme video that took longer than that to transfer — the
+        // failure was then swallowed and retried on every subsequent sync, forever. The per-attempt
+        // budget lives in PollyResilienceHandler instead.
         serviceCollection
             .AddHttpClient("AnimeThemesCDN", c =>
             {
                 c.DefaultRequestHeaders.UserAgent.Add(productHeader);
-                c.Timeout = TimeSpan.FromSeconds(30);
+                c.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
             })
             .AddHttpMessageHandler<PollyResilienceHandler>();
 
@@ -92,6 +99,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             {
                 c.BaseAddress = new Uri("https://graphql.anilist.co");
                 c.DefaultRequestHeaders.UserAgent.Add(productHeader);
-            });
+            })
+            .AddHttpMessageHandler<PollyResilienceHandler>();
     }
 }

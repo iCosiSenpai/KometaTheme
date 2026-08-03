@@ -104,7 +104,12 @@ public class ExternalIdResolver
 
                 var cacheKey = $"{site}:{externalId}";
 
-                if (animeArray.Length > 0)
+                // A match with no downloadable media is not a useful match. Caching it positively
+                // marked the item resolved, cleared it from the failed-items store and then
+                // downloaded nothing — so it silently disappeared from the dashboard and was not
+                // retried until the positive TTL expired days later. This guard existed but was
+                // never wired up to a caller.
+                if (animeArray.Length > 0 && AnimeThemeAvailability.HasAnyUsableTheme(animeArray))
                 {
                     _cache.SetPositive(cacheKey, animeArray);
 
@@ -118,6 +123,15 @@ public class ExternalIdResolver
                 }
                 else
                 {
+                    if (animeArray.Length > 0)
+                    {
+                        _logger.LogInformation(
+                            "{Site}:{ExternalId} matched {Count} anime but none have downloadable themes",
+                            site,
+                            externalId,
+                            animeArray.Length);
+                    }
+
                     _cache.SetNegative(cacheKey);
                 }
             }

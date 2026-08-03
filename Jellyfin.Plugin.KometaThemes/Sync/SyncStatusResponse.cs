@@ -12,6 +12,7 @@ namespace Jellyfin.Plugin.KometaThemes.Sync;
 /// <param name="ResolvedItems">Resolved items.</param>
 /// <param name="DownloadedItems">Downloaded items.</param>
 /// <param name="SkippedItems">Skipped items.</param>
+/// <param name="FailedItems">Failed items.</param>
 /// <param name="ProgressPercent">Progress percentage.</param>
 /// <param name="Message">Display message.</param>
 /// <param name="UpdatedUtc">UTC update time.</param>
@@ -23,6 +24,7 @@ public record SyncStatusResponse(
     [property: JsonPropertyName("resolvedItems")] int ResolvedItems,
     [property: JsonPropertyName("downloadedItems")] int DownloadedItems,
     [property: JsonPropertyName("skippedItems")] int SkippedItems,
+    [property: JsonPropertyName("failedItems")] int FailedItems,
     [property: JsonPropertyName("progressPercent")] double ProgressPercent,
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("updatedUtc")] DateTime UpdatedUtc,
@@ -34,6 +36,6 @@ public record SyncStatusResponse(
     /// <returns>An idle status response.</returns>
     public static SyncStatusResponse Idle()
     {
-        return new SyncStatusResponse("idle", 0, 0, 0, 0, 0, 0, string.Empty, DateTime.UtcNow, true);
+        return new SyncStatusResponse("idle", 0, 0, 0, 0, 0, 0, 0, string.Empty, DateTime.UtcNow, true);
     }
 }

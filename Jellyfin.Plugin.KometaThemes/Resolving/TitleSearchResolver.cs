@@ -26,6 +26,12 @@ public class TitleSearchResolver
     private const int MinimumFallbackScore = 62;
     private const int ExactMatchScore = 100;
 
+    /// <summary>
+    /// Subtracted when the searched title names a season the candidate does not.
+    /// Large enough to push an otherwise perfect token match below the confident threshold.
+    /// </summary>
+    private const int SeasonMismatchScorePenalty = 26;
+
     private readonly AnimeThemesApi _api;
     private readonly IResolutionCache _cache;
     private readonly ILogger<TitleSearchResolver> _logger;
@@ -37,6 +43,10 @@ public class TitleSearchResolver
     private static readonly Regex SourceTagRegex = new(@"\b(BDRip|BRRip|WEBRip|WEB-DL|WEB|BluRay|BLURAY|HDRip|DVDRip)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex BracketInfoRegex = new(@"\[.*?\]|\(.*?(?:H26[45]|x26[45]|HEVC|AV1|AAC|AC3|FLAC|BD|WEB|A Mux).*?\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex MultiSpaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly Regex SeasonOrdinalRegex = new(
+        @"\b(?:season|series|cour|part|stagione)\s*(?:(?<num>\d{1,2})|(?<roman>I{1,3}|IV|VI{0,3}|IX|X))\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly HashSet<string> SearchNoiseWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "a",
@@ -309,11 +319,11 @@ public class TitleSearchResolver
                 }
                 else if (candidateName.Length >= 8 && key.Normalized.StartsWith(candidateName, StringComparison.Ordinal))
                 {
-                    score = 80;
+                    score = ScorePrefixMatch(key.Normalized, candidateName);
                 }
                 else if (candidateSlug.Length >= 8 && key.Normalized.StartsWith(candidateSlug, StringComparison.Ordinal))
                 {
-                    score = 80;
+                    score = ScorePrefixMatch(key.Normalized, candidateSlug);
                 }
             }
 
@@ -334,10 +344,111 @@ public class TitleSearchResolver
                 }
             }
 
+            score -= SeasonMismatchPenalty(key.Value, anime.Name, anime.Slug);
+
             bestScore = Math.Max(bestScore, score);
         }
 
         return Math.Max(0, bestScore);
+    }
+
+    /// <summary>
+    /// Scores a match where the candidate's title is a prefix of the searched title.
+    /// </summary>
+    /// <remarks>
+    /// This bucket used to be a flat 80, which is at or above the default confidence threshold. That
+    /// made "Fullmetal Alchemist Brotherhood" confidently match the *different* show "Fullmetal
+    /// Alchemist", and the wrong match was then cached positively for days with no per-item way to
+    /// invalidate it. A prefix match is only strong evidence when what remains is trivial; a
+    /// substantial leftover usually means the candidate is the parent series, a different season or
+    /// another entry in the franchise, so it now scores below the confident threshold and is
+    /// surfaced as a weak suggestion instead of being bound automatically.
+    /// </remarks>
+    /// <param name="query">Normalized searched title.</param>
+    /// <param name="candidate">Normalized candidate title.</param>
+    /// <returns>A score for this match.</returns>
+    private static int ScorePrefixMatch(string query, string candidate)
+    {
+        var leftover = query.Length - candidate.Length;
+        return leftover <= 2 ? 80 : MinimumFallbackScore;
+    }
+
+    /// <summary>
+    /// Penalty for a season/part ordinal present on one side and absent or different on the other.
+    /// </summary>
+    /// <remarks>
+    /// <c>season</c>, <c>part</c> and <c>cour</c> are in the noise-word list, so tokenizing
+    /// "Attack on Titan Season 2" and "Attack on Titan" produced identical token sets and a
+    /// coverage of 1.0 — a confident match onto the wrong season. The ordinal is exactly the
+    /// discriminator that was being thrown away, so it is compared separately here.
+    /// </remarks>
+    /// <param name="query">Raw searched title.</param>
+    /// <param name="candidateName">Candidate anime name.</param>
+    /// <param name="candidateSlug">Candidate anime slug.</param>
+    /// <returns>The penalty to subtract from the score.</returns>
+    private static int SeasonMismatchPenalty(string? query, string? candidateName, string? candidateSlug)
+    {
+        var queryOrdinal = ExtractSeasonOrdinal(query);
+        if (queryOrdinal == null)
+        {
+            return 0;
+        }
+
+        var candidateOrdinal = ExtractSeasonOrdinal(candidateName) ?? ExtractSeasonOrdinal(candidateSlug);
+
+        // A candidate with no ordinal at all is most likely season 1 / the parent entry.
+        if (candidateOrdinal == null)
+        {
+            return queryOrdinal.Value == 1 ? 0 : SeasonMismatchScorePenalty;
+        }
+
+        return candidateOrdinal.Value == queryOrdinal.Value ? 0 : SeasonMismatchScorePenalty;
+    }
+
+    /// <summary>
+    /// Extracts an explicit season/part/cour ordinal from a title, in digits or roman numerals.
+    /// </summary>
+    /// <param name="value">Title to inspect.</param>
+    /// <returns>The ordinal, or null when the title carries none.</returns>
+    internal static int? ExtractSeasonOrdinal(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = SeasonOrdinalRegex.Match(value);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var digits = match.Groups["num"].Value;
+        if (digits.Length > 0 && int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed is > 0 and <= 50 ? parsed : null;
+        }
+
+        var roman = match.Groups["roman"].Value;
+        return roman.Length > 0 ? RomanToInt(roman) : null;
+    }
+
+    private static int? RomanToInt(string roman)
+    {
+        return roman.ToUpperInvariant() switch
+        {
+            "I" => 1,
+            "II" => 2,
+            "III" => 3,
+            "IV" => 4,
+            "V" => 5,
+            "VI" => 6,
+            "VII" => 7,
+            "VIII" => 8,
+            "IX" => 9,
+            "X" => 10,
+            _ => null
+        };
     }
 
     private static string NormalizeSearchText(string? value)

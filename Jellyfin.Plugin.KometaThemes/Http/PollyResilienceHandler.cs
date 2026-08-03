@@ -16,6 +16,12 @@ namespace Jellyfin.Plugin.KometaThemes.Http;
 /// </summary>
 public sealed class PollyResilienceHandler : DelegatingHandler
 {
+    /// <summary>
+    /// Budget for a single attempt. This covers response headers plus, for streamed downloads, the
+    /// body read — so it must be generous enough for a full theme video.
+    /// </summary>
+    private const int PerAttemptTimeoutSeconds = 300;
+
     private readonly ResiliencePipeline<HttpResponseMessage> _pipeline;
     private readonly ILogger<PollyResilienceHandler> _logger;
 
@@ -26,18 +32,24 @@ public sealed class PollyResilienceHandler : DelegatingHandler
     public PollyResilienceHandler(ILogger<PollyResilienceHandler> logger)
     {
         _logger = logger;
+
+        // Order matters: in Polly v8 the first strategy added is the OUTERMOST one. The timeout used
+        // to be registered first, so a single 30s budget wrapped all three retries plus ~14s of
+        // exponential backoff — retries were usually cut off before they could run, and the
+        // resulting TimeoutRejectedException is not classified as transient so it escaped raw.
+        // Retry now wraps timeout, giving every individual attempt its own budget.
         _pipeline = new ResiliencePipelineBuilder<HttpResponseMessage>()
+            .AddRetry(GetRetryOptions())
+            .AddCircuitBreaker(GetCircuitBreakerOptions())
             .AddTimeout(new TimeoutStrategyOptions
             {
-                Timeout = TimeSpan.FromSeconds(30),
+                Timeout = TimeSpan.FromSeconds(PerAttemptTimeoutSeconds),
                 OnTimeout = args =>
                 {
-                    _logger.LogWarning("Request timed out after {Timeout}s", args.Timeout.TotalSeconds);
+                    _logger.LogWarning("Request attempt timed out after {Timeout}s", args.Timeout.TotalSeconds);
                     return default;
                 }
             })
-            .AddRetry(GetRetryOptions())
-            .AddCircuitBreaker(GetCircuitBreakerOptions())
             .Build();
     }
 
@@ -75,6 +87,10 @@ public sealed class PollyResilienceHandler : DelegatingHandler
                 args.AttemptNumber,
                 args.RetryDelay.TotalMilliseconds,
                 args.Outcome.Result?.StatusCode);
+
+            // The failed response is about to be replaced by a fresh attempt; without this its
+            // content stream and the connection it holds leak once per retry.
+            args.Outcome.Result?.Dispose();
             return default;
         }
     };

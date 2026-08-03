@@ -14,6 +14,7 @@ using Jellyfin.Plugin.KometaThemes.Configuration;
 using Jellyfin.Plugin.KometaThemes.Models;
 using Jellyfin.Plugin.KometaThemes.Resolving;
 using Jellyfin.Plugin.KometaThemes.Sync;
+using Jellyfin.Plugin.KometaThemes.YouTube;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -39,6 +40,11 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
     private const int StrongMatchScore = 78;
     private const int ExactMatchScore = 100;
     private const int ManualDownloadParallelism = 2;
+
+    /// <summary>
+    /// Upper bound for a user-supplied OP/ED sequence number.
+    /// </summary>
+    private const int MaxThemeSequence = 99;
 
     private static readonly HashSet<string> SearchNoiseWords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -68,6 +74,8 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
     private readonly AnimeThemesDownloader _downloader;
     private readonly ILibraryManager _libraryManager;
     private readonly FailedItemsStore _failedItems;
+    private readonly YouTubeImportService _youTube;
+    private readonly ThemeLinkRepairService _linkRepair;
     private readonly ILogger<KometaThemesSearchController> _logger;
     private SemaphoreSlim _downloadSemaphore = new(ManualDownloadParallelism, ManualDownloadParallelism);
 
@@ -76,12 +84,16 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
         AnimeThemesDownloader downloader,
         ILibraryManager libraryManager,
         FailedItemsStore failedItems,
+        YouTubeImportService youTube,
+        ThemeLinkRepairService linkRepair,
         ILogger<KometaThemesSearchController> logger)
     {
         _api = api;
         _downloader = downloader;
         _libraryManager = libraryManager;
         _failedItems = failedItems;
+        _youTube = youTube;
+        _linkRepair = linkRepair;
         _logger = logger;
     }
 
@@ -361,8 +373,18 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
             await _downloadSemaphore.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                var success = await _downloader.DownloadSingle(theme.MediaType, theme.Url, item, theme.RelativePath, theme.Volume, ct).ConfigureAwait(false);
-                results.Add(new { url = theme.Url, name = theme.ThemeName, success });
+                var outcome = await _downloader.DownloadSingle(theme.MediaType, theme.Url, item, theme.RelativePath, theme.Volume, ct).ConfigureAwait(false);
+                results.Add(new
+                {
+                    url = theme.Url,
+                    name = theme.ThemeName,
+                    success = outcome != DownloadOutcome.Failed,
+                    skipped = outcome == DownloadOutcome.Skipped
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -394,6 +416,248 @@ public sealed class KometaThemesSearchController : ControllerBase, IDisposable
         }
 
         return Ok(new { results });
+    }
+
+    /// <summary>
+    /// Reports whether YouTube import is enabled and whether the external extractor is installed.
+    /// </summary>
+    /// <returns>Availability details for the Theme Finder UI.</returns>
+    [HttpGet("YouTube/status")]
+    public IActionResult GetYouTubeStatus()
+    {
+        var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        var availability = _youTube.GetAvailability();
+
+        return Ok(new
+        {
+            enabled = config.EnableYouTubeImport,
+            available = availability.Available,
+            executablePath = availability.Available ? availability.ExecutablePath : string.Empty,
+            error = availability.Error
+        });
+    }
+
+    /// <summary>
+    /// Imports a theme for an item from a YouTube link.
+    /// </summary>
+    /// <remarks>
+    /// The link is reduced to a canonical 11-character video ID and rebuilt server-side, so the
+    /// user-supplied string never reaches the extractor's argument list. The produced files are
+    /// recorded with <see cref="ThemeSource.YouTube"/> so a later sync — which can only ever
+    /// recompute the expected file set from animethemes.moe — does not classify them as orphans and
+    /// delete them.
+    /// </remarks>
+    /// <param name="itemId">Target library item.</param>
+    /// <param name="request">Import parameters.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Per-file results.</returns>
+    [HttpPost("Items/{itemId}/youtube")]
+    public async Task<IActionResult> ImportFromYouTube(string itemId, [FromBody] YouTubeImportRequest? request, CancellationToken ct)
+    {
+        if (request == null)
+        {
+            return BadRequest(new { error = "A YouTube link is required." });
+        }
+
+        var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        if (!config.EnableYouTubeImport)
+        {
+            return BadRequest(new { error = "YouTube import is disabled. Enable it in the KometaThemes settings first." });
+        }
+
+        if (!Enum.IsDefined(request.ThemeType) || !Enum.IsDefined(request.Format))
+        {
+            return BadRequest(new { error = "Invalid themeType or format." });
+        }
+
+        if (!YouTubeUrlParser.TryGetVideoId(request.Url, out var videoId))
+        {
+            return BadRequest(new { error = "That does not look like a YouTube link. Paste a youtube.com or youtu.be video URL." });
+        }
+
+        var sequence = Math.Clamp(request.Sequence, 1, MaxThemeSequence);
+
+        if (!Guid.TryParse(itemId, out var gid))
+        {
+            return BadRequest(new { error = "Invalid itemId." });
+        }
+
+        var item = _libraryManager.GetItemById(gid);
+        if (item == null)
+        {
+            return NotFound(new { error = "Item not found." });
+        }
+
+        if (!LibrarySelection.IsItemEligible(item, _libraryManager, config))
+        {
+            _logger.LogWarning("YouTube import rejected for non-eligible item {ItemId}", itemId);
+            return BadRequest(new { error = LibrarySelection.GetNotEligibleErrorMessage(config) });
+        }
+
+        if (string.IsNullOrWhiteSpace(item.ContainingFolderPath))
+        {
+            return BadRequest(new { error = "Selected item has no writable media folder." });
+        }
+
+        var availability = _youTube.GetAvailability();
+        if (!availability.Available)
+        {
+            return BadRequest(new { error = availability.Error });
+        }
+
+        var wantsAudio = request.Format is ThemeImportFormat.Audio or ThemeImportFormat.Both;
+        var wantsVideo = request.Format is ThemeImportFormat.Video or ThemeImportFormat.Both;
+
+        // Audio-only needs no video stream; anything that also wants a video theme must fetch the
+        // muxed file once and derive both outputs from it.
+        var download = await _youTube.DownloadAsync(videoId, audioOnly: !wantsVideo, ct).ConfigureAwait(false);
+        if (!download.Success)
+        {
+            return BadRequest(new { error = download.Error });
+        }
+
+        try
+        {
+            var displayTitle = !string.IsNullOrWhiteSpace(request.Title) ? request.Title : download.Title;
+            var results = new List<object>();
+
+            if (wantsAudio)
+            {
+                results.Add(await ImportOneAsync(
+                    MediaType.Audio,
+                    download.FilePath,
+                    item,
+                    request,
+                    sequence,
+                    displayTitle,
+                    videoId,
+                    config.AudioSettings.Volume,
+                    ct).ConfigureAwait(false));
+            }
+
+            if (wantsVideo)
+            {
+                results.Add(await ImportOneAsync(
+                    MediaType.Video,
+                    download.FilePath,
+                    item,
+                    request,
+                    sequence,
+                    displayTitle,
+                    videoId,
+                    config.VideoSettings.Volume,
+                    ct).ConfigureAwait(false));
+            }
+
+            try
+            {
+                await item.RefreshMetadata(ct).ConfigureAwait(false);
+                await _linkRepair.RepairAsync(item, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // The files are on disk either way; only the Jellyfin-side linking is best-effort.
+                _logger.LogWarning(ex, "Failed to refresh metadata after YouTube import for {ItemId}", itemId);
+            }
+
+            return Ok(new { title = displayTitle, videoId, results });
+        }
+        finally
+        {
+            _youTube.CleanupDownload(download.FilePath);
+        }
+    }
+
+    private async Task<object> ImportOneAsync(
+        MediaType mediaType,
+        string sourceFile,
+        BaseItem item,
+        YouTubeImportRequest request,
+        int sequence,
+        string displayTitle,
+        string videoId,
+        double volume,
+        CancellationToken ct)
+    {
+        var themeName = BuildImportedThemeName(request.ThemeType, sequence, displayTitle);
+        if (!TryBuildRelativePath(item, mediaType, themeName, out var relativePath, volume))
+        {
+            return new
+            {
+                mediaType = mediaType.ToString().ToLowerInvariant(),
+                success = false,
+                error = "Could not build a valid file name for this theme."
+            };
+        }
+
+        var record = new DownloadRecord
+        {
+            // Synthetic negative id, kept out of the animethemes.moe id space so an imported theme
+            // can never evict a real theme's tracker record (or be evicted by one).
+            ThemeId = -Math.Abs(HashCode.Combine(videoId, mediaType, sequence, request.ThemeType)),
+            Type = request.ThemeType,
+            Sequence = sequence,
+            Slug = videoId,
+            SeasonNumber = Math.Max(0, request.SeasonNumber),
+            DownloadedAt = DateTime.UtcNow,
+            ItemId = item.Id,
+            Source = ThemeSource.YouTube,
+            Directory = mediaType == MediaType.Audio ? ThemeMusicDirectory : ThemeVideoDirectory,
+            SourceUrl = YouTubeUrlParser.BuildWatchUrl(videoId)
+        };
+
+        try
+        {
+            var outcome = await _downloader.ImportLocalFileAsync(mediaType, sourceFile, item, relativePath, volume, record, ct).ConfigureAwait(false);
+            return new
+            {
+                mediaType = mediaType.ToString().ToLowerInvariant(),
+                fileName = Path.GetFileName(relativePath),
+                success = outcome != DownloadOutcome.Failed,
+                skipped = outcome == DownloadOutcome.Skipped
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "YouTube import failed for {ItemId} ({MediaType})", item.Id, mediaType);
+            return new
+            {
+                mediaType = mediaType.ToString().ToLowerInvariant(),
+                success = false,
+                error = ex.Message
+            };
+        }
+    }
+
+    /// <summary>
+    /// Builds the display name for an imported theme, matching the sync path's
+    /// <c>OP1 - Title</c> convention.
+    /// </summary>
+    private static string BuildImportedThemeName(ThemeType themeType, int sequence, string title)
+    {
+        var prefix = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{(themeType == ThemeType.OP ? "OP" : "ED")}{sequence}");
+
+        var cleanTitle = SanitizeThemeName(title);
+
+        // SanitizeThemeName returns the "theme" placeholder for an empty input; in that case the
+        // prefix alone is a better name than "OP1 - theme".
+        if (string.IsNullOrWhiteSpace(title) || string.Equals(cleanTitle, "theme", StringComparison.Ordinal))
+        {
+            return prefix;
+        }
+
+        var combined = prefix + " - " + cleanTitle;
+        return combined.Length > MaxThemeNameLength ? combined[..MaxThemeNameLength].TrimEnd() : combined;
     }
 
     private static void SaveManualBinding(BaseItem item, int animeId, string animeName, string animeSlug)

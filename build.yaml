@@ -1,7 +1,7 @@
 ---
 name: "KometaThemes"
 guid: "48c98707-45d1-43ac-94b8-f74d875ad29c"
-version: "1.0.8.0"
+version: "1.1.0.0"
 targetAbi: "10.11.8.0"
 framework: "net9.0"
 overview: "Plugin for Jellyfin that fetches anime themes (OPs and EDs) from animethemes.moe with multi-provider support"
@@ -15,6 +15,24 @@ owner: "KometaThemes"
 artifacts:
   - "Jellyfin.Plugin.KometaThemes.dll"
 changelog: |-
+  v1.1.0.0
+  - New: add openings and endings from a YouTube link, for themes animethemes.moe does not have. Pasting a link asks whether it is an OP or an ED and whether you want audio, video or both. Off by default, and it needs yt-dlp installed in the Jellyfin environment
+  - Fix: a failed or interrupted conversion no longer leaves a broken theme file that every later sync skipped as "already downloaded". Theme files are now published atomically, and an existing empty one is replaced
+  - Fix: deleting an item from the library no longer wipes the theme-music and backdrops folders wholesale. Cleanup now removes only the files this plugin recorded for that item, so shared folders and your own fanart are left alone
+  - Fix: a force sync no longer deletes theme files it did not create, including ones added through the Theme Finder
+  - Fix: themes whose download failed are kept on the Unresolved list instead of silently disappearing from it
+  - Fix: cancelling a sync now leaves a finished status instead of a progress bar frozen at the last percentage
+  - Fix: large theme videos are no longer aborted after 30 seconds
+  - Fix: one failing provider lookup no longer aborts resolution for every item in the run, and libraries with more than 100 tagged items are no longer partly ignored
+  - Fix: the themes playlist now also finds items in nested library folders
+  - Fix: the resolution cache and the unresolved list survive an unclean shutdown, and a damaged file is kept aside instead of being silently emptied
+  - Fix: sequels and later seasons are no longer confidently matched to the wrong entry ("Season 2" and a bare title are now told apart)
+  - Fix: the ♪ button no longer polls the server every 1.5 seconds while a detail page is open
+  - Fix: keyboard use in the Theme Finder no longer selects the audio track when activating the preview or video button
+  - Fix: downloading themes picked across several seasons now attributes each one to the anime it came from
+  - Fix: sync status pollers stop when you leave a plugin page, and closing a preview no longer swallows a later Escape keypress
+  - Hardening: theme deletion endpoints now refuse files the plugin never recorded, and the anonymous web-injection endpoint has a size limit
+
   v1.0.8.0
   - Introduce a unified high-contrast comet-and-music SVG mark across plugin pages, the item action and Jellyfin's dashboard sidebar
   - Replace duplicated inline artwork and the generic sidebar orb with one versioned embedded asset

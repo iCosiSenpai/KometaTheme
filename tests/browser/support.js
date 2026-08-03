@@ -24,7 +24,9 @@ const defaultConfig = {
   SkippedItems: [],
   MaintainPlaylist: true,
   PlaylistName: 'Anime Themes',
-  PlaylistRootPath: ''
+  PlaylistRootPath: '',
+  EnableYouTubeImport: true,
+  YtDlpPath: ''
 };
 
 async function installJellyfinMocks(page, configOverrides) {
@@ -60,19 +62,26 @@ async function installJellyfinMocks(page, configOverrides) {
     let body;
 
     if (pathname.endsWith('/Health')) {
-      body = { version: '1.0.8.0', isRunning: false, lastFullSyncUtc: null, lastSyncSummary: '' };
+      body = { version: '1.1.0.0', isRunning: false, lastFullSyncUtc: null, lastSyncSummary: '' };
     } else if (pathname.endsWith('/Cache/stats')) {
       body = { TotalEntries: 0, TotalHits: 0, TotalMisses: 0, HitRatePercent: 0 };
     } else if (pathname.endsWith('/Skipped/items') || pathname.endsWith('/Failed/items') || pathname.endsWith('/Bindings')) {
       body = [];
+    } else if (pathname.endsWith('/YouTube/status')) {
+      body = { enabled: true, available: true, executablePath: '/usr/local/bin/yt-dlp', error: '' };
+    } else if (pathname.endsWith('/youtube')) {
+      body = { title: 'Tank!', videoId: 'dQw4w9WgXcQ', results: [{ mediaType: 'audio', fileName: 'OP1 - Tank!__50.mp3', success: true, skipped: false }] };
     } else if (pathname.endsWith('/Sync/status')) {
-      body = { isFinished: true, phase: 'idle', totalItems: 0, processedItems: 0, resolvedItems: 0, downloadedItems: 0, skippedItems: 0 };
+      body = { isFinished: true, phase: 'idle', totalItems: 0, processedItems: 0, resolvedItems: 0, downloadedItems: 0, skippedItems: 0, failedItems: 0 };
     } else if (pathname.endsWith('/eligible')) {
       body = { eligible: true };
     } else if (pathname.endsWith('/binding')) {
       body = { hasBinding: false };
     } else if (pathname.includes('/Anime/1/themes')) {
-      body = { anime: { id: 1, name: 'Cowboy Bebop', year: 1998, season: 'Fall', mediaFormat: 'TV' }, themes: [], seasonGroups: [] };
+      body = {
+        anime: { id: 1, name: 'Cowboy Bebop', year: 1998, season: 'Fall', mediaFormat: 'TV' },
+        themes: [], seasonGroups: [], audioVolume: 0.5, videoVolume: 0.5
+      };
     } else if (pathname.endsWith('/themes')) {
       body = [];
     } else if (pathname.endsWith('/info')) {

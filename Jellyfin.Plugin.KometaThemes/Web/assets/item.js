@@ -65,7 +65,7 @@
         { key: 'AllOPEDAudioVideo', label: 'presetOPEDVideo' }
     ];
 
-    var state = { page: null, itemId: null, poller: null, requestId: 0, busy: false };
+    var state = { page: null, itemId: null, poller: null, life: null, requestId: 0, busy: false };
 
     function q(id) { return state.page.querySelector('#' + id); }
 
@@ -116,7 +116,10 @@
     }
 
     function checkEligibility() {
-        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(state.itemId) + '/eligible').then(function (res) {
+        var itemId = state.itemId;
+        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(itemId) + '/eligible').then(function (res) {
+            // Guard against a slow response for a previously selected item painting this one.
+            if (itemId !== state.itemId) { return; }
             if (res && res.eligible === false) {
                 var warning = q('ktEligibilityWarning');
                 if (!warning) {
@@ -139,9 +142,11 @@
     /* ---- registration banner (Jellyfin 10.11.x link bug) ---- */
 
     function loadRegistration() {
+        var itemId = state.itemId;
         var banner = q('ktRegBanner');
         util.clear(banner);
-        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(state.itemId) + '/info').then(function (info) {
+        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(itemId) + '/info').then(function (info) {
+            if (itemId !== state.itemId) { return; }
             var status = info && info.themeStatus;
             if (!status) { return; }
             var disk = status.songsOnDisk + status.videosOnDisk;
@@ -188,7 +193,9 @@
         var existing = state.page.querySelector('.kt-binding-banner');
         if (existing) { existing.remove(); }
         if (!state.itemId) { return; }
-        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(state.itemId) + '/binding').then(function (data) {
+        var itemId = state.itemId;
+        KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(itemId) + '/binding').then(function (data) {
+            if (itemId !== state.itemId) { return; }
             if (!data || !data.hasBinding) { return; }
             var banner = util.el('div', 'kt-binding-banner');
             banner.appendChild(util.el('span', 'kt-badge success', KT.t('manualBinding', { anime: data.animeName })));
@@ -206,10 +213,16 @@
         var itemId = state.itemId;
         var list = q('ktThemesList');
         util.clear(list);
-        list.appendChild(util.el('div', 'kt-theme')).appendChild(util.el('div', 'kt-skel', '')).style.minHeight = '30px';
+        list.setAttribute('aria-busy', 'true');
+        var skeletonRow = util.el('div', 'kt-theme');
+        var skeleton = util.el('div', 'kt-skel');
+        skeleton.style.minHeight = '30px';
+        skeletonRow.appendChild(skeleton);
+        list.appendChild(skeletonRow);
 
         KT.api.get('Plugins/KometaThemes/Items/' + encodeURIComponent(itemId) + '/themes').then(function (themes) {
             if (requestId !== state.requestId || itemId !== state.itemId) { return; }
+            list.removeAttribute('aria-busy');
             util.clear(list);
             themes = themes || [];
             q('ktThemesCount').textContent = String(themes.length);
@@ -265,6 +278,7 @@
             });
         }).catch(function (error) {
             if (requestId !== state.requestId || itemId !== state.itemId) { return; }
+            list.removeAttribute('aria-busy');
             util.clear(list);
             var fail = util.el('div', 'kt-theme');
             fail.appendChild(util.el('p', 'kt-state error', error.message || KT.t('error')));
@@ -328,7 +342,8 @@
         state.poller = KT.ui.syncPoller(function (status) {
             KT.ui.renderSyncStatus(progress, status);
             if (status.isFinished) {
-                setTimeout(function () { progress.style.display = 'none'; }, 6000);
+                var hide = function () { progress.style.display = 'none'; };
+                if (state.life) { state.life.timeout(hide, 6000); } else { setTimeout(hide, 6000); }
                 loadThemes();
                 loadRegistration();
             }
@@ -383,7 +398,11 @@
 
             if (!page.dataset.ktBound) {
                 page.dataset.ktBound = '1';
-                KT.ui.attachSyncDot(q('ktLiveDot'));
+                state.life = KT.ui.lifecycle(page);
+                state.life.add(KT.ui.attachSyncDot(q('ktLiveDot')));
+                state.life.add(function () {
+                    if (state.poller) { state.poller.stop(); state.poller = null; }
+                });
                 q('ktBtnSyncItem').addEventListener('click', syncItem);
                 q('ktBtnRefresh').addEventListener('click', function () { loadThemes(); loadRegistration(); });
                 q('ktBtnDeleteAll').addEventListener('click', deleteAll);
@@ -410,6 +429,12 @@
                     showSyncProgress();
                 }
             }).catch(function () { /* optional */ });
+        }).catch(function (error) {
+            // Terminal handler: without it a failure inside the chain above became an unhandled
+            // rejection and the page silently stayed on its loading skeleton.
+            try {
+                KT.ui.toast((error && error.message) || KT.t('error'), 'error');
+            } catch (e) { /* toast host unavailable */ }
         });
     }
 

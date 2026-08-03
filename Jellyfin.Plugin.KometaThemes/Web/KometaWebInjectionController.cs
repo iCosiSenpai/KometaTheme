@@ -17,6 +17,18 @@ public class KometaWebInjectionController : ControllerBase
 {
     private const string MarkerId = "kometathemes-itembutton";
 
+    /// <summary>
+    /// Largest document this endpoint will process. Jellyfin's <c>index.html</c> is a few tens of
+    /// kilobytes; anything far beyond that is not a real transformation request.
+    /// </summary>
+    /// <remarks>
+    /// This endpoint has to stay anonymous because the File Transformation plugin posts without an
+    /// auth token, which means an unauthenticated caller can reach it. Without a cap, a large body
+    /// was buffered and then <c>LastIndexOf</c> + <c>Insert</c> allocated another full copy of it,
+    /// so a handful of parallel requests could pressure the server's memory for free.
+    /// </remarks>
+    private const int MaxContentLength = 4 * 1024 * 1024;
+
     private readonly ILogger<KometaWebInjectionController> _logger;
 
     /// <summary>
@@ -36,6 +48,7 @@ public class KometaWebInjectionController : ControllerBase
     /// <param name="request">The transformation request carrying the current file contents.</param>
     /// <returns>The (possibly) modified HTML.</returns>
     [HttpPost]
+    [RequestSizeLimit(MaxContentLength)]
     public IActionResult Inject([FromBody] WebTransformationRequest? request)
     {
         var contents = request?.Contents ?? string.Empty;
@@ -43,6 +56,12 @@ public class KometaWebInjectionController : ControllerBase
         {
             if (contents.Length == 0 || contents.Contains(MarkerId, StringComparison.Ordinal))
             {
+                return Content(contents, "text/html");
+            }
+
+            if (contents.Length > MaxContentLength)
+            {
+                _logger.LogWarning("Rejecting oversized web transformation payload ({Length} chars)", contents.Length);
                 return Content(contents, "text/html");
             }
 

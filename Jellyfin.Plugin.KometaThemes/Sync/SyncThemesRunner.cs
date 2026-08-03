@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -225,9 +226,17 @@ public sealed class SyncThemesRunner
         {
             await RunWithOwnedLockAsync(configuration, progress, runKind, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
-            _statusTracker.Update("failed", 0, 0, 0, 0, 1, ex.Message, true);
+            // Without a terminal snapshot the dashboard kept polling a status that said
+            // phase=download, isFinished=false forever, while _isRunning was already reset —
+            // so the UI simultaneously reported "no sync running" and a frozen progress bar.
+            _statusTracker.Finish("cancelled", "Sync cancelled.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _statusTracker.Finish("failed", ex.Message);
             throw;
         }
         finally
@@ -254,14 +263,14 @@ public sealed class SyncThemesRunner
             _statusTracker.Start(0);
 
             var allItems = LibrarySelection.GetEligibleItems(_libraryManager, configuration).ToArray();
-            _statusTracker.Update("scan", allItems.Length, 0, 0, 0, 0, $"Found {allItems.Length} items");
+            _statusTracker.Update("scan", allItems.Length, 0, 0, 0, 0, 0, $"Found {allItems.Length} items");
 
             _logger.LogInformation("Found {Count} total items to evaluate for theme updates", allItems.Length);
 
             if (allItems.Length == 0)
             {
                 _logger.LogWarning("No eligible items found in libraries matching '{Pattern}'.", configuration.LibraryPattern);
-                _statusTracker.Update("done", 0, 0, 0, 0, 0, "No eligible items.", true);
+                _statusTracker.Update("done", 0, 0, 0, 0, 0, 0, "No eligible items.", true);
                 progress.Report(100);
                 return;
             }
@@ -269,12 +278,12 @@ public sealed class SyncThemesRunner
             var itemsToUpdate = allItems.Where(it => _downloader.ShouldUpdate(it, configuration)).ToArray();
 
             _logger.LogInformation("{Count} items need theme updates", itemsToUpdate.Length);
-            _statusTracker.Update("filter", allItems.Length, 0, 0, 0, allItems.Length - itemsToUpdate.Length, $"{itemsToUpdate.Length} need updates");
+            _statusTracker.Update("filter", allItems.Length, 0, 0, 0, allItems.Length - itemsToUpdate.Length, 0, $"{itemsToUpdate.Length} need updates");
 
             if (itemsToUpdate.Length == 0)
             {
                 _logger.LogInformation("All found items already have the requested themes.");
-                _statusTracker.Update("done", allItems.Length, 0, 0, 0, 0, "All items already satisfied.", true);
+                _statusTracker.Update("done", allItems.Length, 0, 0, 0, 0, 0, "All items already satisfied.", true);
                 progress.Report(100);
                 return;
             }
@@ -284,6 +293,7 @@ public sealed class SyncThemesRunner
             var resolvedCount = 0;
             var downloadedCount = 0;
             var failedCount = 0;
+            var skippedCount = allItems.Length - itemsToUpdate.Length;
 
             for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++)
             {
@@ -319,22 +329,41 @@ public sealed class SyncThemesRunner
                         {
                             try
                             {
-                                var changed = await _downloader.HandleAsync(resolved.Item, anime, configuration, cancellationToken).ConfigureAwait(false);
-                                if (changed)
+                                var outcome = await _downloader.HandleAsync(resolved.Item, anime, configuration, cancellationToken).ConfigureAwait(false);
+                                if (outcome.ChangesMade)
                                 {
                                     downloadedCount++;
                                 }
+
+                                if (outcome.HasFailures)
+                                {
+                                    // A failed download is a failure even though nothing threw:
+                                    // recording it keeps the item on the dashboard's Unresolved
+                                    // list instead of silently retrying it on every sync forever.
+                                    itemFailed = true;
+                                    _logger.LogWarning(
+                                        "{Failed} theme file(s) failed to download for {Name}",
+                                        outcome.Failed,
+                                        resolved.Item.Name);
+                                    _failedItems.Record(
+                                        resolved.Item,
+                                        FailedItemReason.DownloadFailed,
+                                        string.Create(CultureInfo.InvariantCulture, $"{outcome.Failed} theme file(s) failed to download"));
+                                }
                             }
-                            catch (Exception ex)
+                            catch (Exception ex) when (ex is not OperationCanceledException)
                             {
-                                failedCount++;
                                 itemFailed = true;
                                 _failedItems.Record(resolved.Item, FailedItemReason.DownloadFailed, ex.Message);
                                 _logger.LogError(ex, "Error processing {Name}", resolved.Item.Name);
                             }
                         }
 
-                        if (!itemFailed)
+                        if (itemFailed)
+                        {
+                            failedCount++;
+                        }
+                        else
                         {
                             _failedItems.Remove(resolved.Item.Id);
                         }
@@ -342,12 +371,12 @@ public sealed class SyncThemesRunner
 
                     processedItems++;
                     progress.Report(100.0 * processedItems / itemsToUpdate.Length);
-                    _statusTracker.Update("download", allItems.Length, processedItems, resolvedCount, downloadedCount, failedCount);
+                    _statusTracker.Update("download", allItems.Length, processedItems, resolvedCount, downloadedCount, skippedCount, failedCount);
                 }
             }
 
             _logger.LogInformation("KometaThemes sync completed. Processed {Count} items.", processedItems);
-            _statusTracker.Update("done", allItems.Length, processedItems, resolvedCount, downloadedCount, failedCount, $"Completed: {processedItems} processed, {downloadedCount} downloaded", true);
+            _statusTracker.Update("done", allItems.Length, processedItems, resolvedCount, downloadedCount, skippedCount, failedCount, $"Completed: {processedItems} processed, {downloadedCount} downloaded, {failedCount} failed", true);
 
             PersistLastSync(processedItems, downloadedCount, failedCount);
 
@@ -364,9 +393,14 @@ public sealed class SyncThemesRunner
 
             progress.Report(100);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
-            _statusTracker.Update("failed", 0, 0, 0, 0, 1, ex.Message, true);
+            _statusTracker.Finish("cancelled", "Sync cancelled.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _statusTracker.Finish("failed", ex.Message);
             throw;
         }
     }

@@ -18,10 +18,10 @@
                         <div class="kt-hero-content">
                             <div class="kt-row" style="justify-content:space-between;">
                                 <div class="kt-brand">
-                                    <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.0.8.0" alt="" aria-hidden="true" width="34" height="34" />
+                                    <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.1.0.0" alt="" aria-hidden="true" width="34" height="34" />
                                     <div class="kt-wordmark"><strong>Kometa</strong><span data-kt="finderKicker"></span></div>
                                 </div>
-                                <span class="kt-row" style="gap:8px;"><span class="kt-live-dot is-idle" id="ktLiveDot"></span><span class="kt-version">v1.0.8.0</span></span>
+                                <span class="kt-row" style="gap:8px;"><span class="kt-live-dot is-idle" id="ktLiveDot"></span><span class="kt-version">v1.1.0.0</span></span>
                             </div>
                             <div class="kt-row" style="gap:16px; align-items:flex-start;">
                                 <div class="kt-poster" id="ktFinderPoster" style="width:84px;"><div class="kt-poster-ph">♪</div></div>
@@ -32,18 +32,18 @@
                                 </div>
                             </div>
                             <div class="kt-paths" id="ktFinderPaths"></div>
-                            <div class="kt-stepper" id="ktStepper">
-                                <div class="kt-step" data-step="1"><span class="kt-step-dot">1</span><span data-kt="step1"></span></div>
-                                <div class="kt-step-line"></div>
-                                <div class="kt-step" data-step="2"><span class="kt-step-dot">2</span><span data-kt="step2"></span></div>
-                                <div class="kt-step-line"></div>
-                                <div class="kt-step" data-step="3"><span class="kt-step-dot">3</span><span data-kt="step3"></span></div>
+                            <div class="kt-stepper" id="ktStepper" role="list" aria-label="Theme Finder progress">
+                                <div class="kt-step" role="listitem" data-step="1"><span class="kt-step-dot">1</span><span data-kt="step1"></span></div>
+                                <div class="kt-step-line" aria-hidden="true"></div>
+                                <div class="kt-step" role="listitem" data-step="2"><span class="kt-step-dot">2</span><span data-kt="step2"></span></div>
+                                <div class="kt-step-line" aria-hidden="true"></div>
+                                <div class="kt-step" role="listitem" data-step="3"><span class="kt-step-dot">3</span><span data-kt="step3"></span></div>
                             </div>
                         </div>
                     </div>
 
                     <div id="ktFinderNoItem" class="kt-empty" style="display:none;">
-                        <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.0.8.0" alt="" aria-hidden="true" width="34" height="34" />
+                        <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.1.0.0" alt="" aria-hidden="true" width="34" height="34" />
                         <h3 class="kt-subtitle" data-kt="noItemTitle"></h3>
                         <p class="kt-note" data-kt="finderNoItemBody"></p>
                     </div>
@@ -86,7 +86,7 @@
                         <!-- right: selected anime + themes -->
                         <div class="kt-stack" id="ktDetailColumn">
                             <div class="kt-empty" id="ktDetailEmpty">
-                                <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.0.8.0" alt="" aria-hidden="true" width="34" height="34" />
+                                <img class="kt-comet" src="configurationpage?name=KometaThemesLogoSvg&amp;v=1.1.0.0" alt="" aria-hidden="true" width="34" height="34" />
                                 <p class="kt-note" data-kt="detailEmpty"></p>
                             </div>
                             <div class="kt-card kt-reveal" id="ktAnimeCard" style="display:none;">
@@ -100,6 +100,28 @@
                                 </div>
                             </div>
                             <div class="kt-stack" id="ktSeasonGroups"></div>
+                        </div>
+                    </div>
+
+                    <!-- YouTube import: for themes animethemes.moe does not have -->
+                    <div class="kt-card kt-reveal" id="ktYtCard" style="display:none;">
+                        <div class="kt-stack">
+                            <h3 class="kt-subtitle" data-kt="ytTitle"></h3>
+                            <p class="kt-note" data-kt="ytNote"></p>
+                            <div class="kt-state" id="ktYtUnavailable" role="status" style="display:none;"></div>
+                            <div id="ktYtForm" style="display:none;">
+                                <div class="kt-field">
+                                    <label for="ktYtUrl" data-kt="ytUrlLabel"></label>
+                                    <input id="ktYtUrl" class="kt-input" type="url" inputmode="url"
+                                           autocomplete="off" spellcheck="false"
+                                           data-kt-placeholder="ytUrlPlaceholder" aria-describedby="ktYtUrlHint" />
+                                    <p class="kt-field-desc" id="ktYtUrlHint" data-kt="ytUrlHint"></p>
+                                </div>
+                                <div class="kt-row">
+                                    <button type="button" class="kt-btn kt-btn-primary" id="ktBtnYtImport"></button>
+                                </div>
+                                <div class="kt-state" id="ktYtState" role="status" aria-live="polite"></div>
+                            </div>
                         </div>
                     </div>
 
@@ -134,7 +156,7 @@
         </div>
         <script>
         (function () {
-            var V = '1.0.8.0';
+            var V = '1.1.0.0';
             var page = document.getElementById('KometaThemesSearchPage');
 
             function reportBootstrapFailure() {

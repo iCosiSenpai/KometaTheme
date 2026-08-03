@@ -61,8 +61,12 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
             if (_cache.TryGetValue(key, out var entry))
             {
                 var config = Plugin.Instance?.Configuration;
-                var positiveTtl = TimeSpan.FromDays(config?.PositiveCacheTtlDays ?? 7);
-                var negativeTtl = TimeSpan.FromHours(config?.NegativeCacheTtlHours ?? 24);
+
+                // Clamp to at least one unit. A configured 0 made every lookup expire, evict and
+                // mark the cache dirty, so the whole file was reserialized every 30s and the API
+                // was hit at full rate on every sync.
+                var positiveTtl = TimeSpan.FromDays(Math.Max(1, config?.PositiveCacheTtlDays ?? 7));
+                var negativeTtl = TimeSpan.FromHours(Math.Max(1, config?.NegativeCacheTtlHours ?? 24));
 
                 var ttl = entry.IsNegative ? negativeTtl : positiveTtl;
 
@@ -75,7 +79,7 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
 
                 // Expired, remove
                 _cache.Remove(key);
-                _dirty = true;
+                Volatile.Write(ref _dirty, true);
             }
 
             Interlocked.Increment(ref _misses);
@@ -100,7 +104,7 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
                 IsNegative = false,
                 Timestamp = DateTime.UtcNow
             };
-            _dirty = true;
+            Volatile.Write(ref _dirty, true);
         }
         finally
         {
@@ -120,7 +124,7 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
                 IsNegative = true,
                 Timestamp = DateTime.UtcNow
             };
-            _dirty = true;
+            Volatile.Write(ref _dirty, true);
         }
         finally
         {
@@ -135,7 +139,7 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
         try
         {
             _cache.Clear();
-            _dirty = true;
+            Volatile.Write(ref _dirty, true);
             _logger.LogInformation("Resolution cache cleared");
         }
         finally
@@ -183,7 +187,26 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
             }
 
             var json = File.ReadAllText(_cachePath);
-            var entries = JsonSerializer.Deserialize<Dictionary<string, CacheEntry>>(json);
+            Dictionary<string, CacheEntry>? entries;
+            try
+            {
+                entries = JsonSerializer.Deserialize<Dictionary<string, CacheEntry>>(json);
+            }
+            catch (JsonException ex)
+            {
+                // Preserve the bad file instead of letting the next flush silently overwrite it.
+                _logger.LogError(ex, "Resolution cache at {Path} is corrupt; quarantining it", _cachePath);
+                try
+                {
+                    File.Move(_cachePath, _cachePath + ".corrupt", overwrite: true);
+                }
+                catch (Exception moveEx)
+                {
+                    _logger.LogWarning(moveEx, "Failed to quarantine corrupt resolution cache");
+                }
+
+                entries = null;
+            }
 
             _cache.Clear();
             if (entries != null)
@@ -220,7 +243,9 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
 
     private async Task FlushToDiskAsync()
     {
-        if (!_dirty)
+        // Volatile: writers set _dirty under the semaphore, but this pre-check runs outside it,
+        // so a plain read could observe a stale false and skip the flush entirely.
+        if (!Volatile.Read(ref _dirty))
         {
             return;
         }
@@ -228,14 +253,21 @@ public sealed class JsonResolutionCache : IResolutionCache, IDisposable
         await _semaphore.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (!_dirty)
+            if (!Volatile.Read(ref _dirty))
             {
                 return;
             }
 
             var json = JsonSerializer.Serialize(_cache, _jsonOptions);
-            await File.WriteAllTextAsync(_cachePath, json).ConfigureAwait(false);
-            _dirty = false;
+
+            // Write to a sibling temp file and rename it over the target. WriteAllTextAsync
+            // truncates the real file before streaming into it, so a crash mid-flush left a prefix
+            // of valid JSON on disk — permanently unparseable, silently loaded as an empty cache,
+            // and then overwritten by the next flush.
+            var tempPath = _cachePath + ".tmp";
+            await File.WriteAllTextAsync(tempPath, json).ConfigureAwait(false);
+            File.Move(tempPath, _cachePath, overwrite: true);
+            Volatile.Write(ref _dirty, false);
             _logger.LogDebug("Flushed {Count} cache entries to disk", _cache.Count);
         }
         catch (Exception ex)

@@ -7,7 +7,7 @@
 
     // Guard against double-loading the exact same version of core.
     // Bump this string on every meaningful change to kometa-core.js (keeps in sync with Directory.Build.props + HTML V=).
-    var CURRENT_VERSION = '1.0.8.0';
+    var CURRENT_VERSION = '1.1.0.0';
     if (window.KT && window.KT.VERSION === CURRENT_VERSION) { return; }
 
     var KT = {
@@ -204,7 +204,7 @@
             confirmTitle: 'Are you sure?', themeFinder: 'Theme Finder',
             openThemeFinder: 'Open Theme Finder', settings: 'Settings', copy: 'Copy', copied: 'Copied',
             supportLabel: 'Enjoying KometaThemes? Support its development.', supportCoffee: 'Buy me a coffee', supportPayPal: 'Donate with PayPal', supportGitHub: 'Open on GitHub',
-            invalidRemoteUrl: 'Blocked an invalid or insecure remote URL',
+            invalidRemoteUrl: 'Blocked an invalid or insecure remote URL', openOnSource: 'Open on source',
             dotIdle: 'No sync running', dotRunning: 'Sync in progress', dotError: 'Last sync failed'
         },
         it: {
@@ -221,7 +221,7 @@
             confirmTitle: 'Sei sicuro?', themeFinder: 'Theme Finder',
             openThemeFinder: 'Apri Theme Finder', settings: 'Impostazioni', copy: 'Copia', copied: 'Copiato',
             supportLabel: 'KometaThemes ti è utile? Supporta lo sviluppo.', supportCoffee: 'Offrimi un caffè', supportPayPal: 'Dona con PayPal', supportGitHub: 'Apri su GitHub',
-            invalidRemoteUrl: 'URL remoto non valido o non sicuro bloccato',
+            invalidRemoteUrl: 'URL remoto non valido o non sicuro bloccato', openOnSource: 'Apri sulla fonte',
             dotIdle: 'Nessun sync in corso', dotRunning: 'Sync in corso', dotError: 'Ultimo sync fallito'
         }
     };
@@ -253,7 +253,12 @@
         var text = lang[key] != null ? lang[key] : (dict.en[key] != null ? dict.en[key] : key);
         if (params) {
             Object.keys(params).forEach(function (name) {
-                text = text.replace(new RegExp('\\{' + name + '\\}', 'g'), params[name]);
+                /* Function replacement, not a string: $&, $`, $' and $1 are special in a
+                   replacement string, so an anime title containing "$&" rendered corrupted. */
+                var value = params[name];
+                text = text.replace(new RegExp('\\{' + name + '\\}', 'g'), function () {
+                    return value == null ? '' : String(value);
+                });
             });
         }
         return text;
@@ -433,6 +438,60 @@
         };
     };
 
+    /* Per-page teardown registry.
+       Jellyfin caches page divs and never removes them, so a poller started on `pageshow`
+       kept running for the rest of the session — attachSyncDot's 15s status poll and
+       syncPoller's 2s progress poll were both started and their stop handles discarded, so
+       leaving the page did not stop them. Pages register their disposables here and a single
+       `viewbeforehide`/`pagehide` listener runs them when the page is navigated away from. */
+    ui.lifecycle = function (page) {
+        if (!page) { return { add: function () {}, dispose: function () {} }; }
+
+        var registry = page.__ktDisposables;
+        if (!registry) {
+            registry = [];
+            page.__ktDisposables = registry;
+
+            var dispose = function () {
+                var pending = registry.splice(0, registry.length);
+                pending.forEach(function (fn) {
+                    try { fn(); } catch (e) { /* teardown is best-effort */ }
+                });
+            };
+
+            page.addEventListener('viewbeforehide', dispose);
+            page.addEventListener('pagehide', dispose);
+            window.addEventListener('beforeunload', dispose);
+        }
+
+        return {
+            /* Accepts a function, or anything exposing stop()/close()/disconnect(). */
+            add: function (disposable) {
+                if (!disposable) { return disposable; }
+                if (typeof disposable === 'function') {
+                    registry.push(disposable);
+                } else if (typeof disposable.stop === 'function') {
+                    registry.push(function () { disposable.stop(); });
+                } else if (typeof disposable.disconnect === 'function') {
+                    registry.push(function () { disposable.disconnect(); });
+                }
+
+                return disposable;
+            },
+            timeout: function (fn, ms) {
+                var id = setTimeout(fn, ms);
+                registry.push(function () { clearTimeout(id); });
+                return id;
+            },
+            dispose: function () {
+                var pending = registry.splice(0, registry.length);
+                pending.forEach(function (fn) {
+                    try { fn(); } catch (e) { /* teardown is best-effort */ }
+                });
+            }
+        };
+    };
+
     /* Renders a sync status object into a .kt-progress block (fill, phase, counters). */
     ui.renderSyncStatus = function (root, status) {
         if (!root || !status) { return; }
@@ -468,14 +527,30 @@
     ui.player = (function () {
         var current = null;
         var lastVolume = 0.5;
+        var keyHandler = null;
 
+        /* One stable close(). The previous implementation reassigned the local `close`
+           to a per-instance doClose() *after* binding the ✕ button to it, so the button
+           kept calling the previous instance's closer and never unbound the current
+           instance's capture-phase Escape listener. Every player open therefore left an
+           orphan handler on document that swallowed one future Escape press elsewhere in
+           the dashboard. Instance state now lives in module scope instead. */
         function close() {
+            if (keyHandler) {
+                document.removeEventListener('keydown', keyHandler, true);
+                keyHandler = null;
+            }
+
             if (current) {
-                // Persist volume choice for next preview
                 try {
                     var m = current.querySelector('audio,video');
-                    if (m) lastVolume = m.volume;
-                } catch (e) {}
+                    if (m) {
+                        lastVolume = m.volume;
+                        m.pause();
+                        m.removeAttribute('src');
+                        m.load();
+                    }
+                } catch (e) { /* teardown is best-effort */ }
                 current.remove();
                 current = null;
             }
@@ -489,6 +564,7 @@
             }
             url = safeUrl;
             close();
+
             var panel = util.el('div', 'kt-player kt-page');
             var head = util.el('div', 'kt-player-head');
             var badge = util.el('span', 'kt-badge ' + (mediaType === 'video' ? 'ed' : 'op'), mediaType === 'video' ? KT.t('video') : KT.t('audio'));
@@ -499,12 +575,11 @@
             btnClose.setAttribute('aria-label', KT.t('close'));
             btnClose.addEventListener('click', close);
 
-            // Optional external link hint (animethemes source is in the calling context title or we just show host)
             var link = util.el('a', 'kt-player-link', '↗');
             link.href = url;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.title = 'Open on source';
+            link.title = KT.t('openOnSource');
             link.addEventListener('click', function (ev) { ev.stopImmediatePropagation(); });
 
             head.appendChild(badge);
@@ -528,29 +603,19 @@
                 ui.toast(KT.t('error') + ' — ' + KT.t('previewFailedHint'), 'error');
             });
 
-            // Keyboard support while player is open
-            var onKey = function (ev) {
+            keyHandler = function (ev) {
                 if (ev.key === 'Escape') {
                     ev.preventDefault();
-                    doClose();
-                    document.removeEventListener('keydown', onKey, true);
+                    close();
                 }
             };
-            document.addEventListener('keydown', onKey, true);
-
-            function doClose() {
-                document.removeEventListener('keydown', onKey, true);
-                if (current) { current.remove(); current = null; }
-            }
+            document.addEventListener('keydown', keyHandler, true);
 
             panel.appendChild(media);
             document.body.appendChild(panel);
             current = panel;
             panel.dataset.url = url;
             panel.dataset.mediaType = mediaType;
-
-            // Override local close for this instance
-            close = doClose;
         }
 
         return {
