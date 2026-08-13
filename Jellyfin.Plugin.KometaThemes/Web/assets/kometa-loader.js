@@ -2,7 +2,7 @@
 (function (global) {
     'use strict';
 
-    var VERSION = '1.4.0.0';
+    var VERSION = '1.4.1.0';
 
     function asset(name) {
         return 'configurationpage?name=' + encodeURIComponent(name) + '&v=' + VERSION;

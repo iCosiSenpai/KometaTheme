@@ -1,6 +1,6 @@
 {
   "name": "kometathemes-browser-tests",
-  "version": "1.4.0.0",
+  "version": "1.4.1.0",
   "private": true,
   "description": "Browser regression and accessibility tests for the embedded KometaThemes frontend",
   "scripts": {

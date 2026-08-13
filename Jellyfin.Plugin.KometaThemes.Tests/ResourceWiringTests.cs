@@ -19,6 +19,7 @@ public class ResourceWiringTests
         "Jellyfin.Plugin.KometaThemes.Web.SearchPage.html",
         "Jellyfin.Plugin.KometaThemes.Web.ItemButton.js",
         "Jellyfin.Plugin.KometaThemes.Web.assets.kometa.css",
+        "Jellyfin.Plugin.KometaThemes.Web.assets.kometathemes-icon.png",
         "Jellyfin.Plugin.KometaThemes.Web.assets.kometa-loader.js",
         "Jellyfin.Plugin.KometaThemes.Web.assets.kometa-core.js",
         "Jellyfin.Plugin.KometaThemes.Web.assets.kometa-a11y.js",

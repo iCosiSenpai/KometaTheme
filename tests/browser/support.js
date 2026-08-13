@@ -61,7 +61,7 @@ async function installJellyfinMocks(page, configOverrides) {
     let body;
 
     if (pathname.endsWith('/Health')) {
-      body = { version: '1.4.0.0', isRunning: false, lastFullSyncUtc: null, lastSyncSummary: '' };
+      body = { version: '1.4.1.0', isRunning: false, lastFullSyncUtc: null, lastSyncSummary: '' };
     } else if (pathname.endsWith('/Cache/stats')) {
       body = { TotalEntries: 0, TotalHits: 0, TotalMisses: 0, HitRatePercent: 0 };
     } else if (pathname.endsWith('/Skipped/items') || pathname.endsWith('/Failed/items') || pathname.endsWith('/Bindings')) {

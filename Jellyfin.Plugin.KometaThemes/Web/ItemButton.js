@@ -7,8 +7,8 @@
     var PAGE_NAME = 'KometaThemesSearch';
     var MENU_PAGE = 'KometaThemesItem'; // the main-menu drawer entry (Plugin.GetPages)
     var DRAWER_STYLE_ID = 'kometathemes-drawer-style';
-    var ASSET_VERSION = '1.4.0.0';
-    var ICON_URL = 'configurationpage?name=KometaThemesLogoSvg&v=' + ASSET_VERSION;
+    var ASSET_VERSION = '1.4.1.0';
+    var ICON_URL = 'configurationpage?name=KometaThemesIconPng&v=' + ASSET_VERSION;
     var FALLBACK_INTERVAL_MS = 10000;
     var MAX_CACHE_ENTRIES = 500;
 
@@ -194,6 +194,7 @@
         icon.width = 28;
         icon.height = 28;
         icon.style.objectFit = 'contain';
+        icon.style.borderRadius = '7px';
 
         div.appendChild(icon);
         btn.appendChild(div);
@@ -337,7 +338,7 @@
     // ---- Sidebar (dashboard drawer) brand icon -----------------------------
     // Jellyfin 10.11 renders EnableInMainMenu plugin pages with a hardcoded
     // Folder icon and ignores MenuIcon. A narrowly scoped rule hides that
-    // Folder and displays the same versioned SVG mark used by the plugin pages.
+    // Folder and displays the same versioned anime icon used by the plugin pages.
     // The style survives React drawer re-renders without mutating menu nodes.
     function ensureDrawerStyle() {
         if (document.getElementById(DRAWER_STYLE_ID)) {
@@ -351,7 +352,7 @@
             sel + ' svg{display:none!important;}' +
             sel + '{position:relative;}' +
             sel + '::before{content:"";display:inline-block;flex:0 0 24px;' +
-            'width:24px;height:24px;background:url("' + ICON_URL + '") center/contain no-repeat;' +
+            'width:24px;height:24px;border-radius:6px;background:url("' + ICON_URL + '") center/contain no-repeat;' +
             'filter:drop-shadow(0 2px 4px rgba(40,93,210,.35));}';
         (document.head || document.documentElement).appendChild(style);
     }

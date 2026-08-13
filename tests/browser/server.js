@@ -14,7 +14,7 @@ const resources = {
   KometaThemesConfigJs: 'Jellyfin.Plugin.KometaThemes/Web/assets/config.js',
   KometaThemesSearchJs: 'Jellyfin.Plugin.KometaThemes/Web/assets/search.js',
   KometaThemesItemJs: 'Jellyfin.Plugin.KometaThemes/Web/assets/item.js',
-  KometaThemesLogoSvg: 'Jellyfin.Plugin.KometaThemes/Web/assets/kometa-mark.svg'
+  KometaThemesIconPng: 'Jellyfin.Plugin.KometaThemes/Web/assets/kometathemes-icon.png'
 };
 
 function typeFor(file) {
@@ -22,6 +22,7 @@ function typeFor(file) {
   if (file.endsWith('.css')) return 'text/css; charset=utf-8';
   if (file.endsWith('.js')) return 'text/javascript; charset=utf-8';
   if (file.endsWith('.svg')) return 'image/svg+xml';
+  if (file.endsWith('.png')) return 'image/png';
   return 'application/octet-stream';
 }
 

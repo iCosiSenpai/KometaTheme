@@ -101,7 +101,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
             // Shared assets, served through /web/configurationpage?name=...
             new PluginPageInfo { Name = "KometaThemesCss", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometa.css", ns) },
-            new PluginPageInfo { Name = "KometaThemesLogoSvg", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometa-mark.svg", ns) },
+            new PluginPageInfo { Name = "KometaThemesIconPng", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometathemes-icon.png", ns) },
             new PluginPageInfo { Name = "KometaThemesLoaderJs", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometa-loader.js", ns) },
             new PluginPageInfo { Name = "KometaThemesCoreJs", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometa-core.js", ns) },
             new PluginPageInfo { Name = "KometaThemesA11yJs", EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Web.assets.kometa-a11y.js", ns) },
